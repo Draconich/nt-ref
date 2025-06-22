@@ -8,6 +8,10 @@ import shlex
 import subprocess
 import sys
 import time
+import base64
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from typing import cast
 
 # --- Configuration ---
@@ -74,17 +78,45 @@ def run_stun_client(local_port: int) -> tuple[str, str]:
         raise ClientError(f"Incompatible NAT type: '{nat_type}'.")
     return ipport, nat_type
 
-def encrypt_payload(payload: str, key: str) -> str:
-    # This function remains the same
-    logging.info("Encrypting payload...")
-    command = ["openssl", "enc", "-aes-256-cbc", "-a", "-pbkdf2", "-salt", "-md", "sha256", "-pass", f"pass:{key}"]
+def encrypt_payload(payload: str, master_key_hex: str) -> str:
+    """
+    Encrypts a payload using AES-GCM with a derived key.
+    Returns a transport-safe string: base64(nonce + ciphertext).
+    """
+    logging.info("Encrypting payload using pure Python cryptography...")
     try:
-        process = subprocess.run(command, input=payload.encode('utf-8'), capture_output=True, check=True)
-        base64_payload = process.stdout.strip()
-        return base64_payload.hex()
-    except subprocess.CalledProcessError as e:
-        raise ClientError(f"Payload encryption failed: {e.stderr.decode().strip()}")
+        # The master key from the environment is hex-encoded. Decode it.
+        master_key = bytes.fromhex(master_key_hex)
+        payload_bytes = payload.encode('utf-8')
 
+        # Use a fixed salt for deterministic key derivation.
+        # This is safe because the master key is high-entropy.
+        salt = b'gha-nat-traversal-salt'
+        
+        # Derive a 32-byte (256-bit) key from the master key.
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=100_000 # Standard number of iterations
+        )
+        encryption_key = kdf.derive(master_key)
+
+        # AES-GCM requires a nonce (number used once) for each encryption.
+        # It's standard to prepend the nonce to the ciphertext.
+        nonce = os.urandom(12)  # 96 bits is the recommended nonce size for GCM.
+        
+        # Encrypt the data.
+        aesgcm = AESGCM(encryption_key)
+        ciphertext = aesgcm.encrypt(nonce, payload_bytes, None) # No associated data
+
+        # Return the nonce and ciphertext concatenated and then Base64 encoded.
+        # This is a standard and safe way to transport the payload.
+        return base64.b64encode(nonce + ciphertext).decode('utf-8')
+
+    except Exception as e:
+        raise ClientError(f"Pure Python encryption failed: {e}")
+        
 def main():
     """Main entry point for the V2 client."""
     # Add 'gh' to dependency checks
