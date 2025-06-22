@@ -11,7 +11,6 @@ import time
 from typing import cast
 
 # We will reuse some modules, but client logic is mostly self-contained here
-import sys
 from pathlib import Path
 # This adds the project root to Python's path, so it can find the 'gh_runner_service' package
 sys.path.append(str(Path(__file__).resolve().parent.parent))
