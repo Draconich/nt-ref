@@ -90,7 +90,7 @@ def get_env_or_fail(var_name: str) -> str:
 def decrypt_payload(encrypted_payload: str, key: str) -> str:
     """Decrypts a payload using OpenSSL."""
     logging.info("Decrypting payload from commit message.")
-    command = ["openssl", "enc", "-d", "-aes-256-cbc", "-a", "-pbkdf2", "-pass", f"pass:{key}"]
+    command = ["openssl", "enc", "-d", "-aes-256-cbc", "-a", "-pbkdf2", "-md", "sha256", "-pass", f"pass:{key}"]
     try:
         process = subprocess.run(command, input=encrypted_payload, capture_output=True, text=True, check=True)
         return process.stdout.strip()
@@ -239,17 +239,28 @@ def setup_xray(client: ClientInfo, uuid: str) -> None:
 
 def main() -> None:
     """Main entry point for the server manager script."""
-    
     try:
-        # Get all required values from environment variables.
+        # --- Step 1: Get all configuration from environment variables ---
         encryption_key = get_env_or_fail("GHA_PAYLOAD_KEY")
         commit_message = get_env_or_fail("COMMIT_MSG")
         
-        # These are optional depending on the mode.
         wg_private_key = os.getenv("WG_PRIVATE_KEY")
         xray_uuid = os.getenv("XRAY_UUID")
-        
+
+        # --- Step 2: Parse the mode and payload from the commit message ---
         mode, encrypted_payload = parse_commit(commit_message)
+
+        # --- Step 3: Validate that mode-specific secrets are present BEFORE decrypting ---
+        if mode in ["direct-connect", "hole-punch"]:
+            if not wg_private_key:
+                raise ServerManagerError("WG_PRIVATE_KEY secret is not set, but is required for WireGuard modes.")
+        elif mode == "xray":
+            if not xray_uuid:
+                raise ServerManagerError("XRAY_UUID secret is not set, but is required for Xray mode.")
+        else:
+            raise ServerManagerError(f"Unknown mode '{mode}' derived from commit message.")
+
+        # --- Step 4: Now that we know we have what we need, decrypt the payload ---
         decrypted_payload = decrypt_payload(encrypted_payload, encryption_key)
         
         parts = decrypted_payload.split(":")
@@ -262,21 +273,16 @@ def main() -> None:
             local_port=int(parts[2]) if len(parts) > 2 else None
         )
 
+        # --- Step 5: Execute the setup for the chosen mode ---
         setup_common_environment()
 
-        if mode in ["direct-connect", "hole-punch"]:
-            if not wg_private_key:
-                raise ServerManagerError("WG_PRIVATE_KEY is required for this mode.")
-            if mode == "direct-connect":
-                setup_wireguard_client(client_info, wg_private_key)
-            else: # hole-punch
-                setup_wireguard_server(client_info, wg_private_key)
+        if mode == "direct-connect":
+            setup_wireguard_client(client_info, wg_private_key)
+        elif mode == "hole-punch":
+            setup_wireguard_server(client_info, wg_private_key)
         elif mode == "xray":
-            if not xray_uuid:
-                raise ServerManagerError("XRAY_UUID is required for this mode.")
-            setup_xray(client_info, xray_uuid)
-        else:
-            raise ServerManagerError(f"Unknown mode '{mode}' derived from commit message.")
+            # We already know xray_uuid is not None because of the check above
+            setup_xray(client_info, cast(str, xray_uuid))
 
     except (ServerManagerError, FileNotFoundError) as e:
         logging.error(f"A critical error occurred: {e}")
@@ -284,6 +290,6 @@ def main() -> None:
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}", exc_info=True)
         sys.exit(1)
-
+        
 if __name__ == "__main__":
     main()
