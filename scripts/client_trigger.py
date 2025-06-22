@@ -93,7 +93,7 @@ def main():
     parser = argparse.ArgumentParser(description="V2 Client for GitHub Actions NAT traversal.")
     parser.add_argument("mode", choices=["direct-connect", "hole-punch", "xray"], help="The operational mode.")
     parser.add_argument("--repo", help="The GitHub repository in 'owner/repo' format. Defaults to GH_REPO env var.")
-    parser.add_argument("--workflow", default="nat_traversal.yml", help="The name of the workflow file.")
+    parser.add_argument("--workflow", default="main.yml", help="The name of the workflow file.")
     args = parser.parse_args()
     
     # Use --repo flag or fall back to environment variable for convenience
