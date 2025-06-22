@@ -1,64 +1,57 @@
 name: NAT Traversal Server
 
 on:
-    push:
-        branches:
-            - main
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'The operational mode (e.g., direct-connect, hole-punch, xray)'
+        required: true
+        type: string
+      client_info_payload:
+        description: 'A hex-encoded string containing encrypted client data'
+        required: true
+        type: string
 
 concurrency:
-    group: nat-traversal-runner
-    cancel-in-progress: true
+  group: nat-traversal-runner
+  cancel-in-progress: true
 
 jobs:
-    server-runner:
-        name: Server Runner
-        runs-on: ubuntu-24.04
+  server-runner:
+    name: Server Runner
+    runs-on: ubuntu-24.04
 
-        steps:
-            - name: Checkout Repository
-              uses: actions/checkout@v4
-              with:
-                  fetch-depth: 1
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-            - name: Prepare Execution Environment
-              run: |
-                  # Step 1: Install only the necessary, non-standard system packages.
-                  # stun-client/nmap are for NAT traversal, openssh-server is for reverse tunnels.
-                  # The runner's base image already includes curl, unzip, and pip.
-                  echo "Installing required system packages..."
-                  sudo apt-get update
-                  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-                    stun-client nmap openssh-server
+      - name: Prepare Execution Environment
+        run: |
+          echo "Installing required system packages..."
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            stun-client nmap openssh-server
+          echo "Installing Python dependencies..."
+          pip3 install requests cryptography
+          if [ ! -f bin/xray ]; then
+            echo "Downloading Xray binary..."
+            curl -s -f -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o xray.zip
+            unzip -o -q xray.zip xray geoip.dat geosite.dat -d bin/
+            rm xray.zip
+          fi
+          echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
+          chmod +x bin/* scripts/*.py
 
-                  # Step 2: Install Python libraries.
-                  echo "Installing Python dependencies..."
-                  pip3 install requests cryptography
+      - name: Execute Server Logic
+        id: manager
+        env:
+          GHA_PAYLOAD_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          WG_PRIVATE_KEY: ${{ secrets.PRIVATEKEY }}
+          XRAY_UUID: ${{ secrets.UUID }}
 
-                  # Step 3: Download external binaries if they are not already in the repository.
-                  if [ ! -f bin/xray ]; then
-                    echo "Downloading Xray binary..."
-                    # Use curl for its robust error handling (-f) and redirect following (-L).
-                    curl -s -f -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o xray.zip
-                    unzip -o -q xray.zip xray geoip.dat geosite.dat -d bin/
-                    rm xray.zip
-                  fi
-
-                  # Step 4: Add our bin directory to the system PATH for this job.
-                  echo "Adding bin directory to PATH..."
-                  echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
-
-                  # Step 5: Guarantee that all scripts and binaries are executable.
-                  # This is essential for reliability across different developer environments (e.g., Windows).
-                  echo "Setting executable permissions..."
-                  chmod +x bin/* scripts/*.py
-
-            - name: Execute Server Logic
-              id: manager
-              env:
-                  GHA_PAYLOAD_KEY: ${{ secrets.ENCRYPTION_KEY }}
-                  WG_PRIVATE_KEY: ${{ secrets.PRIVATEKEY }}
-                  XRAY_UUID: ${{ secrets.UUID }}
-                  COMMIT_MSG: ${{ github.event.head_commit.message }}
-              run: |
-                  # The commit message is now read from the environment variable
-                  python3 scripts/action_server_manager.py
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_CLIENT_INFO_PAYLOAD: ${{ inputs.client_info_payload }}
+        run: |
+          python3 scripts/action_server_manager.py
