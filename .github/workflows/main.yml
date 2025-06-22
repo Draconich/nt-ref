@@ -1,38 +1,64 @@
+name: NAT Traversal Server
 
-# Template for the GitHub Action acting as a SERVER (hole-punch mode).
-# It listens for an incoming connection from you.
+on:
+    push:
+        branches:
+            - main
 
-[Interface]
-# AmneziaWG specific Jitter-Control and State-Machine parameters
-Jc = 7
-Jmin = 50
-Jmax = 1000
-S1 = 85
-S2 = 30
-H1 = 75
-H2 = 82
-H3 = 100
-H4 = 85
+concurrency:
+    group: nat-traversal-runner
+    cancel-in-progress: true
 
-# The Action's private key will be injected here.
-PrivateKey = {{SERVER_PRIVATE_KEY}}
+jobs:
+    server-runner:
+        name: Server Runner
+        runs-on: ubuntu-24.04
 
-# This is the Action's IP inside the tunnel.
-Address = 192.168.166.1/30
+        steps:
+            - name: Checkout Repository
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 1
 
-# The port it will listen on.
-ListenPort = 443
+            - name: Prepare Execution Environment
+              run: |
+                  # Step 1: Install only the necessary, non-standard system packages.
+                  # stun-client/nmap are for NAT traversal, openssh-server is for reverse tunnels.
+                  # The runner's base image already includes curl, unzip, and pip.
+                  echo "Installing required system packages..."
+                  sudo apt-get update
+                  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                    stun-client nmap openssh-server
 
-[Peer]
-# This is YOUR public key.
-PublicKey = x9u14NXtOKyQHj172VXX1ZvaDveQIov2YxHKihRPSk8=
+                  # Step 2: Install Python libraries.
+                  echo "Installing Python dependencies..."
+                  pip3 install requests cryptography
 
-# The IP you will be assigned inside the tunnel.
-AllowedIPs = 192.168.166.2/32
+                  # Step 3: Download external binaries if they are not already in the repository.
+                  if [ ! -f bin/xray ]; then
+                    echo "Downloading Xray binary..."
+                    # Use curl for its robust error handling (-f) and redirect following (-L).
+                    curl -s -f -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o xray.zip
+                    unzip -o -q xray.zip xray geoip.dat geosite.dat -d bin/
+                    rm xray.zip
+                  fi
 
-# PersistentKeepalive is useful for keeping the NAT traversal open.
-PersistentKeepalive = 25
+                  # Step 4: Add our bin directory to the system PATH for this job.
+                  echo "Adding bin directory to PATH..."
+                  echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
 
-# NOTE: There is NO Endpoint here. The server listens.
+                  # Step 5: Guarantee that all scripts and binaries are executable.
+                  # This is essential for reliability across different developer environments (e.g., Windows).
+                  echo "Setting executable permissions..."
+                  chmod +x bin/* scripts/*.py
 
+            - name: Execute Server Logic
+              id: manager
+              env:
+                  GHA_PAYLOAD_KEY: ${{ secrets.ENCRYPTION_KEY }}
+                  WG_PRIVATE_KEY: ${{ secrets.PRIVATEKEY }}
+                  XRAY_UUID: ${{ secrets.UUID }}
+              run: |
+                  python3 scripts/action_server_manager.py \
+                    --commit-message "${{ github.event.head_commit.message }}"
 
