@@ -11,8 +11,14 @@ import time
 from typing import cast
 
 # We will reuse some modules, but client logic is mostly self-contained here
-from modules.common import AppError, check_dependencies, get_env_or_fail, STUN_SERVER
-from modules.crypto import encrypt_payload
+import sys
+from pathlib import Path
+# This adds the project root to Python's path, so it can find the 'gh_runner_service' package
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+from gh_runner_service.common.exceptions import AppError
+from gh_runner_service.common.utils import check_dependencies, get_env_or_fail
+from gh_runner_service.crypto import encrypt_payload
 
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
