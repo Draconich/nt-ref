@@ -122,18 +122,6 @@ def decrypt_payload(encrypted_payload_hex: str, key: str) -> str:
         full_command_str = " ".join(command + ["-in", "/path/to/tempfile"])
         raise ServerManagerError(f"Payload decryption failed. Command: '{full_command_str}'. Error: {error_msg}")
 
-def parse_commit(commit_message: str) -> tuple[str, str]:
-    """Parses the commit message to get the mode and encrypted payload."""
-    # The payload is now a long hex string, so the simple regex is fine again.
-    match = re.match(r"^(DT|HP|XR): (.+)$", commit_message)
-    if not match:
-        raise ServerManagerError("Commit message does not match expected format '[DT|HP|XR]: <payload>'.")
-    
-    mode_map = {"DT": "direct-connect", "HP": "hole-punch", "XR": "xray"}
-    mode = mode_map[match.group(1)]
-    payload = match.group(2)
-    logging.info(f"Detected mode: {mode}")
-    return mode, payload
 
 def setup_common_environment() -> None:
     """Sets up SSH keys and IP forwarding."""
@@ -263,43 +251,39 @@ def setup_xray(client: ClientInfo, uuid: str) -> None:
     xray_executable_path = BASE_DIR / "bin/xray"
     run_command(f"sudo {xray_executable_path} run -c {final_config_path}")
     run_command("sleep 365d")
+
+
 def main() -> None:
     """Main entry point for the server manager script."""
     try:
         # --- Step 1: Get all configuration from environment variables ---
         logging.info("--- Step 1: Reading environment variables ---")
         encryption_key = get_env_or_fail("GHA_PAYLOAD_KEY")
-        commit_message = get_env_or_fail("COMMIT_MSG")
+        
+        mode = get_env_or_fail("INPUT_MODE")
+        encrypted_payload = get_env_or_fail("INPUT_CLIENT_INFO_PAYLOAD")
         
         wg_private_key = os.getenv("WG_PRIVATE_KEY")
         xray_uuid = os.getenv("XRAY_UUID")
-        logging.info(f"GHA_PAYLOAD_KEY length: {len(encryption_key)}")
-        logging.info(f"COMMIT_MSG: '{commit_message}'")
+        
+        logging.info(f"Mode received: '{mode}'")
+        logging.info(f"Encrypted payload received (length: {len(encrypted_payload)})")
 
-        # --- Step 2: Parse the mode and payload from the commit message ---
-        logging.info("--- Step 2: Parsing commit message ---")
-        mode, encrypted_payload = parse_commit(commit_message)
-        logging.info(f"Parsed Mode: '{mode}'")
-        logging.info(f"Parsed Payload: '{encrypted_payload}'")
-        logging.info(f"Parsed Payload Length: {len(encrypted_payload)}")
-
-        # --- Step 3: Validate that mode-specific secrets are present BEFORE decrypting ---
-        logging.info("--- Step 3: Validating mode-specific secrets ---")
+ 
+        logging.info("--- Step 2: Validating mode-specific secrets ---")
         if mode in ["direct-connect", "hole-punch"]:
             if not wg_private_key:
                 raise ServerManagerError("WG_PRIVATE_KEY secret is not set, but is required for WireGuard modes.")
         elif mode == "xray":
             if not xray_uuid:
                 raise ServerManagerError("XRAY_UUID secret is not set, but is required for Xray mode.")
-        else:
-            raise ServerManagerError(f"Unknown mode '{mode}' derived from commit message.")
         logging.info("Mode-specific secrets are present.")
 
-        # --- Step 4: Now that we know we have what we need, decrypt the payload ---
-        logging.info("--- Step 4: Attempting decryption ---")
+
+        logging.info("--- Step 3: Attempting decryption ---")
         decrypted_payload = decrypt_payload(encrypted_payload, encryption_key)
         
-        logging.info("--- Step 5: Decryption successful! Parsing client info. ---")
+        logging.info("--- Step 4: Decryption successful! Parsing client info. ---")
         parts = decrypted_payload.split(":")
         if not (2 <= len(parts) <= 3):
             raise ServerManagerError("Decrypted payload has incorrect format.")
@@ -310,8 +294,7 @@ def main() -> None:
             local_port=int(parts[2]) if len(parts) > 2 else None
         )
 
-        # --- Step 6: Execute the setup for the chosen mode ---
-        logging.info(f"--- Step 6: Setting up mode '{mode}' ---")
+        logging.info(f"--- Step 5: Setting up mode '{mode}' ---")
         setup_common_environment()
 
         if mode == "direct-connect":
