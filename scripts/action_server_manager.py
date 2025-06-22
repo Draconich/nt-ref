@@ -96,15 +96,13 @@ def decrypt_payload(encrypted_payload_hex: str, key: str) -> str:
     logging.info("Decrypting payload (hex -> base64 -> binary).")
     
     try:
-        # Step 1: Decode the hex string back to the original Base64 string.
-        # It's crucial that this is now bytes, not a string, to pass to stdin.
+        # Step 1: Decode the hex string back to the original Base64 bytes.
         encrypted_payload_b64_bytes = bytes.fromhex(encrypted_payload_hex)
         logging.info("Hex payload decoded back to Base64 bytes.")
 
     except (ValueError, TypeError) as e:
         raise ServerManagerError(f"Failed to decode hex payload: {e}")
 
-    # The command no longer needs the '-in' argument.
     command = ["openssl", "enc", "-d", "-aes-256-cbc", "-a", "-pbkdf2", "-md", "sha256", "-pass", f"pass:{key}"]
     
     try:
@@ -113,18 +111,18 @@ def decrypt_payload(encrypted_payload_hex: str, key: str) -> str:
             command,
             input=encrypted_payload_b64_bytes, # Pass bytes to stdin
             capture_output=True,
-            check=True,
-            text=True # Still decode stdout/stderr as text
+            check=True
+            # --- FIX IS HERE: REMOVED text=True ---
+            # text=False is the default. It expects bytes and returns bytes.
         )
-        return process.stdout.strip()
+        # Since stdout is now bytes, we must decode it to a string.
+        return process.stdout.decode('utf-8').strip()
             
     except subprocess.CalledProcessError as e:
-        stderr_typed = cast(str | None, e.stderr)
-        error_msg = stderr_typed.strip() if stderr_typed else "No stderr output."
-        # The command in the log is now simpler and more accurate
+        # stderr is also bytes now, so we must decode it for the error message.
+        stderr_decoded = e.stderr.decode('utf-8').strip() if e.stderr else "No stderr output."
         full_command_str = " ".join(command)
-        raise ServerManagerError(f"Payload decryption failed. Command: '{full_command_str}'. Error: {error_msg}")
-
+        raise ServerManagerError(f"Payload decryption failed. Command: '{full_command_str}'. Error: {stderr_decoded}")
 def setup_common_environment() -> None:
     """Sets up SSH keys and IP forwarding."""
     logging.info("Configuring common environment settings.")
