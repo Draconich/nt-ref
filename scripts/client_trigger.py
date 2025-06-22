@@ -79,18 +79,24 @@ def run_stun_client(local_port: int) -> tuple[str, str]:
     return ipport, nat_type
 
 def encrypt_payload(payload: str, key: str) -> str:
-    """Encrypts a payload using OpenSSL and returns a Base64 string."""
+    """Encrypts a payload using OpenSSL and returns a hex-encoded Base64 string."""
     logging.info("Encrypting payload for commit message.")
-    command = ["openssl", "enc", "-aes-256-cbc", "-a", "-pbkdf2", "-salt", "-md", "sha256", "-pass", f"pass:{key}"] 
+    # Step 1: Encrypt to Base64 (this output has a newline, which is fine)
+    command = ["openssl", "enc", "-aes-256-cbc", "-a", "-pbkdf2", "-salt", "-md", "sha256", "-pass", f"pass:{key}"]
     try:
-        process = subprocess.run(command, input=payload, capture_output=True, text=True, check=True) 
-        return process.stdout  
+        process = subprocess.run(command, input=payload, capture_output=True, text=True, check=True)
+        base64_payload = process.stdout
+        
+        # Step 2: Convert the Base64 string to a hex string. This is safe for git.
+        hex_payload = base64_payload.encode('utf-8').hex()
+        logging.info("Payload converted to hex for safe transport in git commit.")
+        return hex_payload
+
     except subprocess.CalledProcessError as e:
-        # FIX: Use `cast` to inform the linter of the correct type (str | None).
         stderr_typed = cast(str | None, e.stderr)
         error_msg = stderr_typed.strip() if stderr_typed else ""
         raise ClientError(f"Payload encryption failed. Is OpenSSL installed? Error: {error_msg}")
-
+        
 def git_commit_and_push(message: str) -> None:
     """Creates an empty commit with the given message and pushes it."""
     logging.info("Committing and pushing trigger to the repository...")
