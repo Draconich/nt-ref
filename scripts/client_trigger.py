@@ -81,7 +81,7 @@ def run_stun_client(local_port: int) -> tuple[str, str]:
 def encrypt_payload(payload: str, key: str) -> str:
     """Encrypts a payload using OpenSSL and returns a Base64 string."""
     logging.info("Encrypting payload for commit message.")
-    command = ["openssl", "enc", "-aes-256-cbc", "-a", "-pbkdf2", "-salt", "-pass", f"pass:{key}"]
+    command = ["openssl", "enc", "-aes-256-cbc", "-a", "-pbkdf2", "-salt", "-md", "sha256", "-pass", f"pass:{key}"] 
     try:
         process = subprocess.run(command, input=payload, capture_output=True, text=True, check=True)
         return process.stdout.strip()
