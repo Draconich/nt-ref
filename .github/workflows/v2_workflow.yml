@@ -49,6 +49,7 @@ jobs:
       - name: Execute V2 Server Logic
         id: manager
         env:
+          PYTHONPATH: '.'
           # Secrets are still passed securely
           GHA_PAYLOAD_KEY: ${{ secrets.ENCRYPTION_KEY }}
           WG_PRIVATE_KEY: ${{ secrets.PRIVATEKEY }}
