@@ -50,20 +50,37 @@ def run_stun_client(local_port: int) -> tuple[str, str]:
     """
     logging.info(f"Running STUN client on local port {local_port}...")
     stun_cmd = f"stun -v {STUN_SERVER} -p {local_port}"
+    
     try:
+        # We don't use 'check=True' because stun-client uses non-zero exit codes
+        # to report different NAT types, which we don't want to treat as a hard error.
         result = subprocess.run(
             shlex.split(stun_cmd),
-            capture_output=True, text=True, check=True, timeout=15
+            capture_output=True, text=True, timeout=15
         )
         output = result.stdout + result.stderr
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        raise ClientError(f"STUN client execution failed. Is 'stun-client' installed? Error: {e}")
+
+        # However, a very high exit code (like 127 for 'command not found') or
+        # completely empty output still indicates a true failure.
+        if result.returncode > 10 or not output.strip():
+            raise ClientError(
+                f"STUN client execution failed in a critical way. "
+                f"Is 'stun-client' installed and in your PATH? Exit Code: {result.returncode}"
+            )
+
+    except FileNotFoundError:
+        # This catches the case where 'stun' command doesn't exist at all.
+        raise ClientError("STUN client command not found. Please install 'stun-client'.")
+    except subprocess.TimeoutExpired:
+        raise ClientError("STUN client timed out. Check your network connection and firewall.")
+
 
     mapped_addr_match = re.search(r"MappedAddress = (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+)", output)
     nat_type_match = re.search(r"Primary: (.*)", output)
 
     if not mapped_addr_match or not nat_type_match:
-        raise ClientError("Could not parse STUN client output. NAT traversal may not be possible.")
+        logging.error(f"STUN Raw Output:\n{output}")
+        raise ClientError("Could not parse STUN client output. Your NAT might be too restrictive.")
 
     ipport = mapped_addr_match.group(1)
     nat_type = nat_type_match.group(1).strip()
