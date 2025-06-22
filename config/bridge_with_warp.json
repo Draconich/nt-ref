@@ -1,0 +1,85 @@
+{
+  "log": {
+    "loglevel": "none"
+  },
+
+  "reverse": {
+    "bridges": [
+      {
+        "tag": "bridge",
+        "domain": "reverse.hellohabr.com"
+      }
+    ]
+  },
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "192.168.1.35",
+            "port": 443,
+            "users": [
+              {
+                "id": "UUID",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "fingerprint": "chrome",
+          "serverName": "cloudflare.com",
+          "publicKey": "pNVkQojVsBa8lQZI9GKZOXJIyMdCSRYmhAJEbZcQlns",
+          "spiderX": "",
+          "shortId": ""
+        }
+      },
+      "tag": "outgoing"
+    },
+    {
+      "protocol": "wireguard",
+      "settings": {
+        "secretKey": "PRIVATE",
+        "address": ["172.16.0.2/32", "2606:4700:110:8949:fed8:2642:a640:c8e1/128"],
+        "peers": [
+          {
+            "publicKey": "PUBLIC",
+            "endpoint": "engage.cloudflareclient.com:2408",
+            "keepAlive": 14
+          }
+        ]
+      },
+      "tag": "wireguard-1"
+    },
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    },
+    {
+      "protocol": "blackhole",
+      "tag": "block"
+    }
+  ],
+  "routing": {
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": ["bridge"],
+        "domain": ["full:reverse.hellohabr.com"],
+        "outboundTag": "outgoing"
+      },
+      {
+        "type": "field",
+        "inboundTag": ["bridge"],
+        "outboundTag": "wireguard-1"
+      }
+    ]
+  }
+}
+

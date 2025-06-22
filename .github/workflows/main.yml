@@ -1,0 +1,38 @@
+
+# Template for the GitHub Action acting as a SERVER (hole-punch mode).
+# It listens for an incoming connection from you.
+
+[Interface]
+# AmneziaWG specific Jitter-Control and State-Machine parameters
+Jc = 7
+Jmin = 50
+Jmax = 1000
+S1 = 85
+S2 = 30
+H1 = 75
+H2 = 82
+H3 = 100
+H4 = 85
+
+# The Action's private key will be injected here.
+PrivateKey = {{SERVER_PRIVATE_KEY}}
+
+# This is the Action's IP inside the tunnel.
+Address = 192.168.166.1/30
+
+# The port it will listen on.
+ListenPort = 443
+
+[Peer]
+# This is YOUR public key.
+PublicKey = x9u14NXtOKyQHj172VXX1ZvaDveQIov2YxHKihRPSk8=
+
+# The IP you will be assigned inside the tunnel.
+AllowedIPs = 192.168.166.2/32
+
+# PersistentKeepalive is useful for keeping the NAT traversal open.
+PersistentKeepalive = 25
+
+# NOTE: There is NO Endpoint here. The server listens.
+
+
