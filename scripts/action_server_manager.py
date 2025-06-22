@@ -236,21 +236,28 @@ def setup_xray(client: ClientInfo, uuid: str) -> None:
     logging.info("Xray configuration generated successfully.")
     run_command(f"sudo xray run -c {final_config_path}")
     run_command("sleep 365d")
-
 def main() -> None:
     """Main entry point for the server manager script."""
     try:
         # --- Step 1: Get all configuration from environment variables ---
+        logging.info("--- Step 1: Reading environment variables ---")
         encryption_key = get_env_or_fail("GHA_PAYLOAD_KEY")
         commit_message = get_env_or_fail("COMMIT_MSG")
         
         wg_private_key = os.getenv("WG_PRIVATE_KEY")
         xray_uuid = os.getenv("XRAY_UUID")
+        logging.info(f"GHA_PAYLOAD_KEY length: {len(encryption_key)}")
+        logging.info(f"COMMIT_MSG: '{commit_message}'")
 
         # --- Step 2: Parse the mode and payload from the commit message ---
+        logging.info("--- Step 2: Parsing commit message ---")
         mode, encrypted_payload = parse_commit(commit_message)
+        logging.info(f"Parsed Mode: '{mode}'")
+        logging.info(f"Parsed Payload: '{encrypted_payload}'")
+        logging.info(f"Parsed Payload Length: {len(encrypted_payload)}")
 
         # --- Step 3: Validate that mode-specific secrets are present BEFORE decrypting ---
+        logging.info("--- Step 3: Validating mode-specific secrets ---")
         if mode in ["direct-connect", "hole-punch"]:
             if not wg_private_key:
                 raise ServerManagerError("WG_PRIVATE_KEY secret is not set, but is required for WireGuard modes.")
@@ -259,10 +266,13 @@ def main() -> None:
                 raise ServerManagerError("XRAY_UUID secret is not set, but is required for Xray mode.")
         else:
             raise ServerManagerError(f"Unknown mode '{mode}' derived from commit message.")
+        logging.info("Mode-specific secrets are present.")
 
         # --- Step 4: Now that we know we have what we need, decrypt the payload ---
+        logging.info("--- Step 4: Attempting decryption ---")
         decrypted_payload = decrypt_payload(encrypted_payload, encryption_key)
         
+        logging.info("--- Step 5: Decryption successful! Parsing client info. ---")
         parts = decrypted_payload.split(":")
         if not (2 <= len(parts) <= 3):
             raise ServerManagerError("Decrypted payload has incorrect format.")
@@ -272,8 +282,10 @@ def main() -> None:
             port=int(parts[1]),
             local_port=int(parts[2]) if len(parts) > 2 else None
         )
+        logging.info(f"Client Info: {client_info}")
 
-        # --- Step 5: Execute the setup for the chosen mode ---
+        # --- Step 6: Execute the setup for the chosen mode ---
+        logging.info(f"--- Step 6: Setting up mode '{mode}' ---")
         setup_common_environment()
 
         if mode == "direct-connect":
@@ -281,7 +293,6 @@ def main() -> None:
         elif mode == "hole-punch":
             setup_wireguard_server(client_info, wg_private_key)
         elif mode == "xray":
-            # We already know xray_uuid is not None because of the check above
             setup_xray(client_info, cast(str, xray_uuid))
 
     except (ServerManagerError, FileNotFoundError) as e:
