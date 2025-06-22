@@ -152,17 +152,19 @@ def main():
             payload_str = f"{ip}:443"
 
         # 2. Encrypt the payload
-        encrypted_payload_hex = encrypt_payload(payload_str, encryption_key)
+        encrypted_payload_b64 = encrypt_payload(payload_str, encryption_key)
 
         # 3. Trigger the workflow using 'gh workflow run'
+        logging.info("Triggering workflow via 'gh'...")
         logging.info("Triggering workflow via 'gh'...")
         trigger_command = [
             'gh', 'workflow', 'run', args.workflow,
             '--repo', repo,
             '--field', f'mode={args.mode}',
-            '--field', f'client_info_payload={encrypted_payload_hex}',
+            '--field', f'client_info_payload={encrypted_payload_b64}', # Pass Base64 directly
             '--ref', 'main'
         ]
+    
         subprocess.run(trigger_command, check=True, capture_output=True)
         logging.info("Workflow triggered successfully.")
 
