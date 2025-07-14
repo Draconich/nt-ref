@@ -27,13 +27,6 @@ jobs:
 
             - name: Prepare Execution Environment
               run: |
-                  echo "Installing required system packages..."
-                  sudo apt-get update
-                  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-                    stun-client netcat-openbsd openssh-server
-
-                  echo "Installing Python dependencies..."
-                  pip3 install requests cryptography
 
                   echo "Downloading Xray binary..."
                   curl -s -f -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o xray.zip
