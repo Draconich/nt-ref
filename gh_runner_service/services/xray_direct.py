@@ -5,7 +5,7 @@ from pathlib import Path
 import time # Import time for sleep
 import signal # Import signal for graceful shutdown
 import subprocess # Import subprocess for Popen type hinting
-
+from typing import cast
 from ..common.exceptions import AppError
 from ..common.models import (
     ClientInfo,
