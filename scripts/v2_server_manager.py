@@ -11,7 +11,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from gh_runner_service.common.crypto import decrypt_payload
 from gh_runner_service.common.exceptions import AppError
 from gh_runner_service.common.models import ClientInfo
-from gh_runner_service.common.utils import get_env_or_fail
+from gh_runner_service.common.utils import get_env_or_fail, ensure_apt_command_installed
 from gh_runner_service.services import (
     base_setup,
     wireguard,
@@ -57,6 +57,9 @@ def main() -> None:
 
         # Step 4: Validate secrets and run mode-specific logic.
         if mode in ["direct-connect", "hole-punch"]:
+            if mode == "hole-punch":
+                logging.info("Hole-punch mode detected. Ensuring STUN is installed...")
+                ensure_apt_command_installed("stun", "stun-client")
             wg_private_key = get_env_or_fail("WG_PRIVATE_KEY")
             wireguard_args = (client_info, wg_private_key, BASE_DIR, CONFIG_DIR)
             if mode == "direct-connect":
