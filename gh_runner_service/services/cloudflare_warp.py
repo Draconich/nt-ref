@@ -84,6 +84,7 @@ class WarpApiClient:
             error_body = e.response.text if e.response else "No response body"
             raise AppError(f"WARP API request failed: {e}. Body: {error_body}")
 
+
     def register_and_get_config(self) -> WarpConfig:
         """High-level function to register and fetch a WARP configuration."""
         private_key, public_key = self._generate_keys()
@@ -96,9 +97,22 @@ class WarpApiClient:
             reserved_bytes = base64.b64decode(reserved_str)
             interface_addrs = api_data["config"]["interface"]["addresses"]
 
-            # Return the clean, shared WarpConfig dataclass from our models
+
+            # The API is returning a port of 0, which is invalid.
+            # We must manually construct the correct endpoint.
+            api_endpoint_v4 = peer["endpoint"]["v4"]
+            logging.info(f"Received endpoint from API: {api_endpoint_v4}")
+
+            # Split the IP from the invalid port
+            ip_address_v4 = api_endpoint_v4.split(":")[0]
+            
+            # Construct the correct endpoint with the known WARP port 2408
+            correct_endpoint_v4 = f"{ip_address_v4}:2408"
+            logging.info(f"Corrected endpoint to use: {correct_endpoint_v4}")
+            
+            # Use the corrected endpoint when creating the config object
             return WarpConfig(
-                endpoint_v4=peer["endpoint"]["v4"],
+                endpoint_v4=correct_endpoint_v4, # Use the corrected value
                 private_key=private_key,
                 public_key=peer["public_key"],
                 address_v4=interface_addrs["v4"],
