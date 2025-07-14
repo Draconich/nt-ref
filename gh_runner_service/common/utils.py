@@ -1,90 +1,64 @@
-# gh_runner_service/services/xray_warp.py
-import json
+# gh_runner_service/common/utils.py
 import logging
-from pathlib import Path
-import time # Import time for sleep
-import signal # Import signal for graceful shutdown
-import subprocess # Import subprocess for Popen type hinting
+import os
+import subprocess
+from typing import cast
 
-from ..common.exceptions import AppError
-from ..common.models import (
-    ClientInfo,
-    XrayConfig,
-    XrayVlessOutbound,
-    XrayWireguardOutbound,
-)
-from ..common.utils import run_command, run_background_command # Import run_background_command
-from .cloudflare_warp import get_warp_config
+# This is the correct set of imports for this file.
+# Note that it does NOT import from itself.
+from .exceptions import AppError
 
-def setup_service(client: ClientInfo, uuid: str, base_dir: Path, config_dir: Path) -> None:
-    """Configures and runs the Xray server with WARP."""
-    logging.info("Setting up Xray server with WARP.")
-    _ = run_command("sysctl -w net.core.default_qdisc=fq")
-    _ = run_command("sysctl -w net.ipv4.tcp_congestion_control=bbr")
-
-    warp_config = get_warp_config()
-
-    config_path = config_dir / "bridge_with_warp.json"
-    if not config_path.exists():
-        raise AppError(f"WARP Xray config not found: {config_path}")
-
-    with open(config_path) as f:
-        xray_config = cast(XrayConfig, json.load(f))
-
-    for outbound in xray_config["outbounds"]:
-        if outbound["protocol"] == "vless":
-            vless_outbound = cast(XrayVlessOutbound, outbound)
-            vless_outbound["settings"]["vnext"][0]["address"] = client.ip
-            vless_outbound["settings"]["vnext"][0]["users"][0]["id"] = uuid
-        elif outbound["protocol"] == "wireguard":
-            wg_outbound = cast(XrayWireguardOutbound, outbound)
-            wg_outbound["settings"]["secretKey"] = warp_config.private_key
-            wg_outbound["settings"]["address"] = [warp_config.address_v4]
-            wg_outbound["settings"]["peers"][0]["publicKey"] = warp_config.public_key
-            wg_outbound["settings"]["peers"][0]["endpoint"] = warp_config.endpoint_v4
-            wg_outbound["settings"]["reserved"] = warp_config.reserved_dec
-
-    final_config_path = base_dir / "bridge-final.json"
-    with open(final_config_path, "w") as f:
-        json.dump(xray_config, f, indent=2)
-
-    logging.info("Xray+WARP configuration generated successfully.")
-    xray_executable_path = base_dir / "bin/xray"
-
-    xray_process: subprocess.Popen[str] | None = None
+def run_command(command: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    """Helper to run a shell command and log its output."""
+    logging.info(f"Executing: {command}")
     try:
-        # Start Xray in the background
-        xray_process = run_background_command(f"{xray_executable_path} run -c {final_config_path}")
-        logging.info(f"Xray started with PID: {xray_process.pid}")
+        return subprocess.run(command, shell=True, check=check, text=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Command failed with exit code {e.returncode}")
+        stdout_val = cast(str | None, e.stdout)
+        stderr_val = cast(str | None, e.stderr)
+        stdout_log = stdout_val.strip() if stdout_val else "No stdout"
+        stderr_log = stderr_val.strip() if stderr_val else "No stderr"
+        logging.error(f"STDOUT: {stdout_log}")
+        logging.error(f"STDERR: {stderr_log}")
+        raise AppError(f"Execution failed for command: {command}") from e
 
-        # Calculate sleep duration: 5 hours 59 minutes in seconds
-        sleep_duration_seconds = (5 * 3600) + (59 * 60)
-        logging.info(f"Sleeping for {sleep_duration_seconds} seconds before graceful shutdown...")
-        time.sleep(sleep_duration_seconds)
+def run_background_command(command: str) -> subprocess.Popen[str]:
+    """
+    Runs a shell command in the background and returns the Popen object.
+    Uses start_new_session=True to put the process in a new process group.
+    """
+    logging.info(f"Executing in background: {command}")
+    try:
+        process = subprocess.Popen(command, shell=True, text=True, start_new_session=True)
+        return process
+    except Exception as e:
+        raise AppError(f"Failed to start background command '{command}': {e}")
 
-        logging.info("Sleep duration finished. Attempting graceful shutdown of Xray...")
-        if xray_process.poll() is None: # Check if Xray is still running
-            xray_process.send_signal(signal.SIGTERM) # Send SIGTERM for graceful shutdown
-            logging.info("SIGTERM sent to Xray. Waiting for process to terminate...")
-            try:
-                xray_process.wait(timeout=10) # Wait up to 10 seconds for graceful exit
-                logging.info(f"Xray terminated gracefully with exit code {xray_process.returncode}.")
-            except subprocess.TimeoutExpired:
-                logging.warning("Xray did not terminate gracefully within 10 seconds. Forcing kill.")
-                xray_process.kill() # Force kill if it doesn't respond to SIGTERM
-                xray_process.wait()
-                logging.info(f"Xray forced killed with exit code {xray_process.returncode}.")
-        else:
-            logging.info(f"Xray was already stopped with exit code {xray_process.returncode}.")
+def get_env_or_fail(var_name: str) -> str:
+    """Gets an environment variable or raises a specific error if not found."""
+    value = os.getenv(var_name)
+    if not value:
+        raise AppError(f"Required environment variable '{var_name}' is not set.")
+    return value
 
-    except AppError as e:
-        logging.error(f"Error starting or managing Xray: {e}")
-        # Ensure Xray is cleaned up if an error occurs during its management
-        if xray_process and xray_process.poll() is None:
-            logging.info("Attempting to kill Xray process due to error.")
-            xray_process.kill()
-            xray_process.wait()
-        raise # Re-raise the error to propagate it
+def check_dependencies(*cmds: str) -> None:
+    """Checks if required command-line tools are installed."""
+    for cmd in cmds:
+        if subprocess.run(['which', cmd], capture_output=True).returncode != 0:
+            raise AppError(f"Required command '{cmd}' not found. Please install it and ensure it's in your PATH.")
 
-    logging.info("Xray operation concluded.")
-    # The script will now exit, and the GitHub Actions job will complete.
+def ensure_apt_command_installed(command_name: str, package_name: str | None = None) -> None:
+    """
+    Checks if a command is available in PATH. If not, attempts to install it
+    using apt-get. Assumes the script is already running with root privileges.
+    """
+    if subprocess.run(['which', command_name], capture_output=True).returncode != 0:
+        actual_package_name = package_name if package_name else command_name
+        logging.info(f"Command '{command_name}' not found. Attempting to install '{actual_package_name}' via apt...")
+        try:
+            run_command("apt-get update")
+            run_command(f"DEBIAN_FRONTEND=noninteractive apt-get install -y {actual_package_name}")
+            logging.info(f"Successfully installed '{actual_package_name}'.")
+        except AppError as e:
+            raise AppError(f"Failed to install required command '{command_name}' (package: {actual_package_name}): {e}")
