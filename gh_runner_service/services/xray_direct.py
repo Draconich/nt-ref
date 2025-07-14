@@ -2,7 +2,9 @@
 import json
 import logging
 from pathlib import Path
-from typing import cast
+import time # Import time for sleep
+import signal # Import signal for graceful shutdown
+import subprocess # Import subprocess for Popen type hinting
 
 from ..common.exceptions import AppError
 from ..common.models import (
@@ -10,7 +12,7 @@ from ..common.models import (
     XrayConfig,
     XrayVlessOutbound,
 )
-from ..common.utils import run_command
+from ..common.utils import run_command, run_background_command # Import run_background_command
 
 def setup_service(client: ClientInfo, uuid: str, base_dir: Path, config_dir: Path) -> None:
     """
@@ -51,5 +53,41 @@ def setup_service(client: ClientInfo, uuid: str, base_dir: Path, config_dir: Pat
 
     logging.info("Direct Xray (Freedom) configuration generated successfully.")
     xray_executable_path = base_dir / "bin/xray"
-    _ = run_command(f"{xray_executable_path} run -c {final_config_path}")
-    _ = run_command("sleep 365d")
+
+    xray_process: subprocess.Popen[str] | None = None
+    try:
+        # Start Xray in the background
+        xray_process = run_background_command(f"{xray_executable_path} run -c {final_config_path}")
+        logging.info(f"Xray started with PID: {xray_process.pid}")
+
+        # Calculate sleep duration: 5 hours 59 minutes in seconds
+        sleep_duration_seconds = (5 * 3600) + (59 * 60)
+        logging.info(f"Sleeping for {sleep_duration_seconds} seconds before graceful shutdown...")
+        time.sleep(sleep_duration_seconds)
+
+        logging.info("Sleep duration finished. Attempting graceful shutdown of Xray...")
+        if xray_process.poll() is None: # Check if Xray is still running
+            xray_process.send_signal(signal.SIGTERM) # Send SIGTERM for graceful shutdown
+            logging.info("SIGTERM sent to Xray. Waiting for process to terminate...")
+            try:
+                xray_process.wait(timeout=10) # Wait up to 10 seconds for graceful exit
+                logging.info(f"Xray terminated gracefully with exit code {xray_process.returncode}.")
+            except subprocess.TimeoutExpired:
+                logging.warning("Xray did not terminate gracefully within 10 seconds. Forcing kill.")
+                xray_process.kill() # Force kill if it doesn't respond to SIGTERM
+                xray_process.wait()
+                logging.info(f"Xray forced killed with exit code {xray_process.returncode}.")
+        else:
+            logging.info(f"Xray was already stopped with exit code {xray_process.returncode}.")
+
+    except AppError as e:
+        logging.error(f"Error starting or managing Xray: {e}")
+        # Ensure Xray is cleaned up if an error occurs during its management
+        if xray_process and xray_process.poll() is None:
+            logging.info("Attempting to kill Xray process due to error.")
+            xray_process.kill()
+            xray_process.wait()
+        raise # Re-raise the error to propagate it
+
+    logging.info("Xray operation concluded.")
+    # The script will now exit, and the GitHub Actions job will complete.
