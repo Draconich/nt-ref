@@ -78,7 +78,7 @@ def run_stun_client(local_port: int) -> tuple[str, str]:
 
 def main() -> None:
     """Main entry point for the V2 client."""
-    check_dependencies("git", "gh", "requests")
+    check_dependencies("gh")
 
     parser = argparse.ArgumentParser(description="V2 Client for GitHub Actions NAT traversal.")
     _ = parser.add_argument(
