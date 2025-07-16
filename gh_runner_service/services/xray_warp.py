@@ -1,12 +1,11 @@
 # gh_runner_service/services/xray_warp.py
 import json
 import logging
-from pathlib import Path
-import time # Import time for sleep
-import signal # Import signal for graceful shutdown
-import subprocess # Import subprocess for Popen type hinting
+import time
 from datetime import timedelta
+from pathlib import Path
 from typing import cast
+
 from ..common.exceptions import AppError
 from ..common.models import (
     ClientInfo,
@@ -14,78 +13,122 @@ from ..common.models import (
     XrayVlessOutbound,
     XrayWireguardOutbound,
 )
-from ..common.utils import run_command, run_background_command # Import run_background_command
+from ..common.utils import manage_process, run_command
 from .cloudflare_warp import get_warp_config
 
-def setup_service(client: ClientInfo, uuid: str, base_dir: Path, config_dir: Path) -> None:
-    """Configures and runs the Xray server with WARP."""
-    logging.info("Setting up Xray server with WARP.")
-    _ = run_command("sysctl -w net.core.default_qdisc=fq")
-    _ = run_command("sysctl -w net.ipv4.tcp_congestion_control=bbr")
+# --- Constants ---
+XRAY_CONFIG_TEMPLATE = "bridge_with_warp.json"
+XRAY_FINAL_CONFIG = "bridge-final.json"
+XRAY_EXECUTABLE = "bin/xray"
 
+PROTOCOL_VLESS = "vless"
+PROTOCOL_WIREGUARD = "wireguard"
+
+
+def _generate_xray_config(
+    client: ClientInfo,
+    uuid: str,
+    base_dir: Path,
+    config_dir: Path,
+) -> Path:
+    """
+    Generates the final Xray JSON configuration file.
+
+    It fetches a new WARP configuration, loads the template, injects the
+    client-specific and WARP-specific details, and saves the final config.
+
+    Args:
+        client: Information about the connecting user.
+        uuid: The VLESS user UUID for authentication.
+        base_dir: The project's base directory path.
+        config_dir: The directory containing configuration templates.
+
+    Returns:
+        The path to the generated final configuration file.
+
+    Raises:
+        AppError: If the configuration template is not found or if the
+                  VLESS/WireGuard outbounds are missing from the template.
+    """
     warp_config = get_warp_config()
 
-    config_path = config_dir / "bridge_with_warp.json"
-    if not config_path.exists():
-        raise AppError(f"WARP Xray config not found: {config_path}")
+    config_template_path = config_dir / XRAY_CONFIG_TEMPLATE
+    if not config_template_path.exists():
+        raise AppError(f"WARP Xray config template not found: {config_template_path}")
 
-    with open(config_path) as f:
+    with open(config_template_path) as f:
         xray_config = cast(XrayConfig, json.load(f))
 
+    vless_found = False
+    wg_found = False
     for outbound in xray_config["outbounds"]:
-        if outbound["protocol"] == "vless":
+        if outbound["protocol"] == PROTOCOL_VLESS:
             vless_outbound = cast(XrayVlessOutbound, outbound)
             vless_outbound["settings"]["vnext"][0]["address"] = client.ip
             vless_outbound["settings"]["vnext"][0]["users"][0]["id"] = uuid
-        elif outbound["protocol"] == "wireguard":
+            vless_found = True
+        elif outbound["protocol"] == PROTOCOL_WIREGUARD:
             wg_outbound = cast(XrayWireguardOutbound, outbound)
-            wg_outbound["settings"]["secretKey"] = warp_config.private_key
-            wg_outbound["settings"]["address"] = [warp_config.address_v4]
-            wg_outbound["settings"]["peers"][0]["publicKey"] = warp_config.public_key
-            wg_outbound["settings"]["peers"][0]["endpoint"] = warp_config.endpoint_v4
-            wg_outbound["settings"]["reserved"] = warp_config.reserved_dec
+            settings = wg_outbound["settings"]
+            settings["secretKey"] = warp_config.private_key
+            settings["address"] = [warp_config.address_v4]
+            settings["peers"][0]["publicKey"] = warp_config.public_key
+            settings["peers"][0]["endpoint"] = warp_config.endpoint_v4
+            settings["reserved"] = warp_config.reserved_dec
+            wg_found = True
 
-    final_config_path = base_dir / "bridge-final.json"
+    if not vless_found or not wg_found:
+        raise AppError(
+            f"Could not find required VLESS or WireGuard outbound in {XRAY_CONFIG_TEMPLATE}"
+        )
+
+    final_config_path = base_dir / XRAY_FINAL_CONFIG
     with open(final_config_path, "w") as f:
         json.dump(xray_config, f, indent=2)
 
-    logging.info("Xray+WARP configuration generated successfully.")
-    xray_executable_path = base_dir / "bin/xray"
+    logging.info(f"Xray+WARP configuration generated successfully at {final_config_path}")
+    return final_config_path
 
-    xray_process: subprocess.Popen[str] | None = None
+
+def setup_service(client: ClientInfo, uuid: str, base_dir: Path, config_dir: Path) -> None:
+    """
+    Sets up and runs the Xray service with a WARP outbound.
+
+    This function orchestrates the entire process:
+    1. Sets kernel parameters for performance.
+    2. Generates the Xray configuration.
+    3. Uses a common process manager to safely run the Xray process.
+    4. Puts the main thread to sleep, relying on the context manager
+       for guaranteed cleanup when the workflow ends.
+
+    Args:
+        client: Information about the connecting user.
+        uuid: The VLESS user UUID for authentication.
+        base_dir: The project's base directory path.
+        config_dir: The directory containing configuration templates.
+    """
+    logging.info("Setting up Xray server with WARP.")
+    _ = run_command("sysctl -w net.core.default_qdisc=fq", check=False)
+    _ = run_command("sysctl -w net.ipv4.tcp_congestion_control=bbr", check=False)
+
     try:
-        # Start Xray in the background
-        xray_process = run_background_command(f"{xray_executable_path} run -c {final_config_path}")
-        logging.info(f"Xray started with PID: {xray_process.pid}")
+        final_config_path = _generate_xray_config(client, uuid, base_dir, config_dir)
+        xray_executable_path = base_dir / XRAY_EXECUTABLE
+        command = f"{xray_executable_path} run -c {final_config_path}"
 
-        # Calculate sleep duration: 5 hours 59 minutes 50 seconds in seconds
-        sleep_duration = timedelta(hours=5, minutes=59, seconds=50)
-        logging.info(f"Service running. Sleeping for {sleep_duration} before shutdown...")
-        time.sleep(sleep_duration.total_seconds())
- 
-        logging.info("Sleep duration finished. Attempting graceful shutdown of Xray...")
-        if xray_process.poll() is None: # Check if Xray is still running
-            xray_process.send_signal(signal.SIGTERM) # Send SIGTERM for graceful shutdown
-            logging.info("SIGTERM sent to Xray. Waiting for process to terminate...")
-            try:
-                xray_process.wait(timeout=5) # Wait up to 5 seconds for graceful exit
-                logging.info(f"Xray terminated gracefully with exit code {xray_process.returncode}.")
-            except subprocess.TimeoutExpired:
-                logging.warning("Xray did not terminate gracefully within 10 seconds. Forcing kill.")
-                xray_process.kill() # Force kill if it doesn't respond to SIGTERM
-                xray_process.wait()
-                logging.info(f"Xray forced killed with exit code {xray_process.returncode}.")
-        else:
-            logging.info(f"Xray was already stopped with exit code {xray_process.returncode}.")
+        with manage_process(command) as process:
+            time.sleep(1)
+            if process.poll() is not None:
+                raise AppError(
+                    f"Xray failed to start or exited unexpectedly. Exit code: {process.returncode}"
+                )
+
+            sleep_duration = timedelta(hours=5, minutes=59, seconds=50)
+            logging.info(f"Service running. Sleeping for {sleep_duration} before shutdown...")
+            time.sleep(sleep_duration.total_seconds())
+
+        logging.info("Service operation concluded. Xray has been shut down.")
 
     except AppError as e:
-        logging.error(f"Error starting or managing Xray: {e}")
-        # Ensure Xray is cleaned up if an error occurs during its management
-        if xray_process and xray_process.poll() is None:
-            logging.info("Attempting to kill Xray process due to error.")
-            xray_process.kill()
-            xray_process.wait()
-        raise # Re-raise the error to propagate it
-
-    logging.info("Xray operation concluded.")
-    # The script will now exit, and the GitHub Actions job will complete.
+        logging.error(f"A critical error occurred during service setup: {e}")
+        raise
