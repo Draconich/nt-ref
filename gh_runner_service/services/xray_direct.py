@@ -5,6 +5,7 @@ from pathlib import Path
 import time # Import time for sleep
 import signal # Import signal for graceful shutdown
 import subprocess # Import subprocess for Popen type hinting
+from datetime import timedelta
 from typing import cast
 from ..common.exceptions import AppError
 from ..common.models import (
@@ -60,10 +61,10 @@ def setup_service(client: ClientInfo, uuid: str, base_dir: Path, config_dir: Pat
         xray_process = run_background_command(f"{xray_executable_path} run -c {final_config_path}")
         logging.info(f"Xray started with PID: {xray_process.pid}")
 
-        # Calculate sleep duration: 5 hours 59 minutes in seconds
-        sleep_duration_seconds = (5 * 3600) + (59 * 60)
-        logging.info(f"Sleeping for {sleep_duration_seconds} seconds before graceful shutdown...")
-        time.sleep(sleep_duration_seconds)
+        sleep_duration = timedelta(hours=5, minutes=59, seconds=50)
+        logging.info(f"Service running. Sleeping for {sleep_duration} before shutdown...")
+        time.sleep(sleep_duration.total_seconds())
+
 
         logging.info("Sleep duration finished. Attempting graceful shutdown of Xray...")
         if xray_process.poll() is None: # Check if Xray is still running
