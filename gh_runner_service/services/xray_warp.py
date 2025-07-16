@@ -57,8 +57,8 @@ def setup_service(client: ClientInfo, uuid: str, base_dir: Path, config_dir: Pat
         xray_process = run_background_command(f"{xray_executable_path} run -c {final_config_path}")
         logging.info(f"Xray started with PID: {xray_process.pid}")
 
-        # Calculate sleep duration: 5 hours 59 minutes in seconds
-        sleep_duration_seconds = (5 * 3600) + (59 * 60)
+        # Calculate sleep duration: 5 hours 59 minutes 50 seconds in seconds
+        sleep_duration_seconds = (5 * 3600) + (59 * 60) + 50
         logging.info(f"Sleeping for {sleep_duration_seconds} seconds before graceful shutdown...")
         time.sleep(sleep_duration_seconds)
 
@@ -67,7 +67,7 @@ def setup_service(client: ClientInfo, uuid: str, base_dir: Path, config_dir: Pat
             xray_process.send_signal(signal.SIGTERM) # Send SIGTERM for graceful shutdown
             logging.info("SIGTERM sent to Xray. Waiting for process to terminate...")
             try:
-                xray_process.wait(timeout=10) # Wait up to 10 seconds for graceful exit
+                xray_process.wait(timeout=5) # Wait up to 5 seconds for graceful exit
                 logging.info(f"Xray terminated gracefully with exit code {xray_process.returncode}.")
             except subprocess.TimeoutExpired:
                 logging.warning("Xray did not terminate gracefully within 10 seconds. Forcing kill.")
