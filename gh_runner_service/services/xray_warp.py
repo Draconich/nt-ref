@@ -123,7 +123,7 @@ def setup_service(client: ClientInfo, uuid: str, base_dir: Path, config_dir: Pat
                     f"Xray failed to start or exited unexpectedly. Exit code: {process.returncode}"
                 )
 
-            sleep_duration = timedelta(hours=5, minutes=59, seconds=50)
+            sleep_duration = timedelta(hours=5, minutes=59, seconds=56)
             logging.info(f"Service running. Sleeping for {sleep_duration} before shutdown...")
             time.sleep(sleep_duration.total_seconds())
 
