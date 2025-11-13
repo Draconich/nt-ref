@@ -3,6 +3,7 @@ import configparser
 import logging
 import re
 import time
+import json
 from pathlib import Path
 
 from ..common.exceptions import AppError
@@ -47,12 +48,17 @@ def setup_client_mode(client: ClientInfo, private_key: str, base_dir: Path, conf
     _ = run_command(f"wg setconf wg0 {final_config_path}")
 
 
-    logging.info("Detecting primary network interface...")
-    get_iface_cmd = "ip route show default | awk '/default/ {print $5}'"
+    logging.info("Detecting primary network interface using JSON output...")
+    get_iface_cmd = "ip -j route show default"
     result = run_command(get_iface_cmd)
-    primary_interface = result.stdout.strip()
-    if not primary_interface:
-        raise AppError("Could not determine the primary network interface.")
+
+    try:
+        # The command outputs a JSON array, e.g., [{"dev": "eth0", ...}]
+        route_info = json.loads(result.stdout)
+        primary_interface = route_info[0]['dev']
+    except (json.JSONDecodeError, IndexError, KeyError) as e:
+        raise AppError(f"Could not parse primary interface from JSON output: {result.stdout}") from e
+
     logging.info(f"Detected primary network interface: {primary_interface}")
 
     _ = run_command("iptables -A FORWARD -i wg0 -j ACCEPT")
