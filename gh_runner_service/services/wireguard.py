@@ -46,8 +46,18 @@ def setup_client_mode(client: ClientInfo, private_key: str, base_dir: Path, conf
     _ = run_command(f"ip link set up dev wg0")
     _ = run_command(f"wg setconf wg0 {final_config_path}")
 
+
+    logging.info("Detecting primary network interface...")
+    get_iface_cmd = "ip route show default | awk '/default/ {print $5}'"
+    result = run_command(get_iface_cmd)
+    primary_interface = result.stdout.strip()
+    if not primary_interface:
+        raise AppError("Could not determine the primary network interface.")
+    logging.info(f"Detected primary network interface: {primary_interface}")
+
     _ = run_command("iptables -A FORWARD -i wg0 -j ACCEPT")
-    _ = run_command("iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE")
+    _ = run_command("iptables -A FORWARD -o wg0 -j ACCEPT")
+    _ = run_command("iptables -t nat -A POSTROUTING -o {primary_interface} -j MASQUERADE")
     logging.info("WireGuard (Client) is up and running.")
     _ = run_command("sleep 365d")
 
