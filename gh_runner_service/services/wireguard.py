@@ -59,7 +59,6 @@ def setup_client_mode(client: ClientInfo, private_key: str, base_dir: Path, conf
     logging.info("WireGuard (Client) is up and running.")
     _ = run_command("sleep 365d")
 
-
 def setup_client_warp_mode(client: ClientInfo, private_key: str, base_dir: Path, config_dir: Path) -> None:
     """
     Sets up a chained WireGuard connection: Client (A) -> Runner (B) -> WARP (C).
@@ -83,6 +82,7 @@ def setup_client_warp_mode(client: ClientInfo, private_key: str, base_dir: Path,
     logging.info("Starting amneziawg-go daemon for wg0...")
     _ = run_background_command("bin/amneziawg-go -f wg0")
     time.sleep(1) # Give the daemon a moment to start
+    # Assign the runner its IP in the A->B tunnel
     _ = run_command(f"ip address add dev wg0 {WG_CLIENT_IP}/30")
     _ = run_command("ip link set up dev wg0")
     _ = run_command(f"wg setconf wg0 {wg0_final_config_path}")
@@ -99,8 +99,6 @@ def setup_client_warp_mode(client: ClientInfo, private_key: str, base_dir: Path,
         raise AppError(f"WARP client config template not found: {wg1_template_path}")
     _ = wg1_config.read(wg1_template_path)
     wg1_config["Interface"]["PrivateKey"] = warp_config.private_key
-    # REMOVED: Do not add the Address to the config file for wg setconf
-    # wg1_config["Interface"]["Address"] = warp_config.address_v4
     wg1_config["Peer"]["PublicKey"] = warp_config.public_key
     wg1_config["Peer"]["Endpoint"] = warp_config.endpoint_v4
     wg1_final_config_path = base_dir / "wg1-final.conf"
@@ -110,7 +108,6 @@ def setup_client_warp_mode(client: ClientInfo, private_key: str, base_dir: Path,
     logging.info("Starting amneziawg-go daemon for wg1...")
     _ = run_background_command("bin/amneziawg-go -f wg1")
     time.sleep(1) # Give the daemon a moment to start
-    # MODIFIED: Add the /32 CIDR mask required by the 'ip address add' command
     _ = run_command(f"ip address add dev wg1 {warp_config.address_v4}/32")
     _ = run_command("ip link set up dev wg1")
     _ = run_command(f"wg setconf wg1 {wg1_final_config_path}")
@@ -125,10 +122,10 @@ def setup_client_warp_mode(client: ClientInfo, private_key: str, base_dir: Path,
     _ = run_command(f'bash -c "echo \'{TABLE_ID} {TABLE_NAME}\' >> /etc/iproute2/rt_tables"')
     logging.info(f"Added custom routing table '{TABLE_NAME}' ({TABLE_ID}).")
 
-    # 2. Add a policy rule to direct traffic FROM Host A's tunnel IP into the new table
-    # This is the key to split-tunneling: only this specific source is affected.
-    _ = run_command(f"ip rule add from {WG_CLIENT_IP}/32 table {TABLE_NAME}")
-    logging.info(f"Added rule: traffic from {WG_CLIENT_IP} now uses table {TABLE_NAME}.")
+    # 2. **FIXED**: Add a policy rule to direct traffic FROM Host A's tunnel IP into the new table.
+    #    We use WG_SERVER_IP (192.168.166.1) as the source, which is your client's IP.
+    _ = run_command(f"ip rule add from {WG_SERVER_IP}/32 table {TABLE_NAME}")
+    logging.info(f"Added rule: traffic from {WG_SERVER_IP} now uses table {TABLE_NAME}.")
 
     # 3. Populate the new table with a default route via the wg1 (WARP) interface
     _ = run_command(f"ip route add default dev wg1 table {TABLE_NAME}")
@@ -140,12 +137,14 @@ def setup_client_warp_mode(client: ClientInfo, private_key: str, base_dir: Path,
     _ = run_command("iptables -A FORWARD -i wg0 -o wg1 -j ACCEPT")
     # Allow return traffic
     _ = run_command("iptables -A FORWARD -i wg1 -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT")
-    # Apply NAT for traffic leaving the WARP tunnel, so it appears to come from the runner's WARP IP
+    # **FIXED**: Apply NAT using the correct 'MASQUERADE' target
     _ = run_command("iptables -t nat -A POSTROUTING -o wg1 -j MASQUERADE")
     logging.info("iptables rules applied successfully.")
 
     logging.info("Chained WireGuard setup is complete and running.")
     _ = run_command("sleep 365d")
+
+
 
 
 def setup_server_mode(client: ClientInfo, private_key: str, base_dir: Path, config_dir: Path) -> None:
