@@ -63,7 +63,7 @@ def setup_client_mode(client: ClientInfo, private_key: str, base_dir: Path, conf
 
     _ = run_command("iptables -A FORWARD -i wg0 -j ACCEPT")
     _ = run_command("iptables -A FORWARD -o wg0 -j ACCEPT")
-    _ = run_command("iptables -t nat -A POSTROUTING -o {primary_interface} -j MASQUERADE")
+    _ = run_command(f"iptables -t nat -A POSTROUTING -o {primary_interface} -j MASQUERADE")
     logging.info("WireGuard (Client) is up and running.")
     _ = run_command("sleep 365d")
 
