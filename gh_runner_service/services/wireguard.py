@@ -35,6 +35,8 @@ def setup_client_mode(client: ClientInfo, private_key: str, base_dir: Path, conf
     # so we must send it to the background with '&'.
     _ = run_command("bin/amneziawg-go -f wg0 &")
 
+    logging.info("Waiting for daemon to initialize...")
+    _ = run_command("sleep 1")
     logging.info("Configuring the userspace tunnel...")
     _ = run_command(f"wg setconf wg0 {final_config_path}")
     _ = run_command(f"ip address add dev wg0 {WG_CLIENT_IP}/30") # Use CLIENT_IP for the client
