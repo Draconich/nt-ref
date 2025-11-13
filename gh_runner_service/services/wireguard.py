@@ -2,18 +2,20 @@
 import configparser
 import logging
 import re
+import time
 from pathlib import Path
 
 from ..common.exceptions import AppError
 # FIX 1: Correct the import path to include the 'common' subdirectory.
 from ..common.models import ClientInfo
-from ..common.utils import run_command
+from ..common.utils import run_command, run_background_command
 
 # Constants
 STUN_SERVER = "stun.l.google.com:19302"
 WG_SERVER_PORT = 443
 WG_SERVER_IP = "192.168.166.1"
 WG_CLIENT_IP = "192.168.166.2"
+
 
 def setup_client_mode(client: ClientInfo, private_key: str, base_dir: Path, config_dir: Path) -> None:
     logging.info("Setting up WireGuard in CLIENT mode (direct-connect).")
@@ -29,24 +31,47 @@ def setup_client_mode(client: ClientInfo, private_key: str, base_dir: Path, conf
         config.write(f)
     logging.info(f"Final client config written to {final_config_path}")
 
-    # --- NEW command sequence for amneziawg-go ---
-    logging.info("Starting amneziawg-go userspace daemon for wg0...")
-    # The amneziawg-go command creates the interface and runs in the foreground,
-    # so we must send it to the background with '&'.
-    _ = run_command("bin/amneziawg-go -f wg0 &")
+    # --- NEW, CORRECTED command sequence for amneziawg-go ---
 
-    logging.info("Waiting for daemon to initialize...")
-    _ = run_command("sleep 1")
+    # 1. Ensure the control socket directory exists. This is the critical step.
+    socket_dir = "/var/run/wireguard"
+    logging.info(f"Ensuring control socket directory exists: {socket_dir}")
+    _ = run_command(f"mkdir -p {socket_dir}")
+
+    # 2. Start the daemon in the background correctly.
+    #    Your `run_background_command` is better than `&` but let's just use Popen directly for clarity.
+    logging.info("Starting amneziawg-go userspace daemon for wg0...")
+    daemon_process = run_background_command("bin/amneziawg-go -f wg0")
+
+    # 3. Wait for the daemon to initialize and create the socket.
+    logging.info("Waiting for daemon to create control socket...")
+    time.sleep(1) # A short, simple wait is usually enough.
+
+    # 4. (Optional but recommended) Add a check to see if the socket was created.
+    #    This will provide a clear error if the daemon failed to start.
+    socket_path = Path(f"{socket_dir}/wg0.sock")
+    if not socket_path.exists():
+        # Check daemon logs if it exited
+        stdout, stderr = daemon_process.communicate()
+        logging.error(f"Daemon stdout: {stdout}")
+        logging.error(f"Daemon stderr: {stderr}")
+        raise AppError(f"amneziawg-go daemon failed to start or create socket at {socket_path}")
+    logging.info(f"Control socket found at {socket_path}.")
+
+    # 5. Now, configure the interface. `wg` will find the socket.
     logging.info("Configuring the userspace tunnel...")
     _ = run_command(f"wg setconf wg0 {final_config_path}")
-    _ = run_command(f"ip address add dev wg0 {WG_CLIENT_IP}/30") # Use CLIENT_IP for the client
+    _ = run_command(f"ip address add dev wg0 {WG_CLIENT_IP}/30")
     _ = run_command(f"ip link set up dev wg0")
+
     # --- END of new sequence ---
 
     _ = run_command("iptables -A FORWARD -i wg0 -j ACCEPT")
     _ = run_command("iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE")
     logging.info("WireGuard (Client) is up and running.")
     _ = run_command("sleep 365d")
+
+
 
 def setup_server_mode(client: ClientInfo, private_key: str, base_dir: Path, config_dir: Path) -> None:
     """Configures the Action as a WireGuard SERVER listening for the user (hole-punch)."""
