@@ -60,7 +60,6 @@ def setup_client_mode(client: ClientInfo, private_key: str, base_dir: Path, conf
     _ = run_command("sleep 365d")
 
 
-# NEW: The complete function for the A -> B -> C chained tunnel
 def setup_client_warp_mode(client: ClientInfo, private_key: str, base_dir: Path, config_dir: Path) -> None:
     """
     Sets up a chained WireGuard connection: Client (A) -> Runner (B) -> WARP (C).
@@ -100,7 +99,8 @@ def setup_client_warp_mode(client: ClientInfo, private_key: str, base_dir: Path,
         raise AppError(f"WARP client config template not found: {wg1_template_path}")
     _ = wg1_config.read(wg1_template_path)
     wg1_config["Interface"]["PrivateKey"] = warp_config.private_key
-    wg1_config["Interface"]["Address"] = warp_config.address_v4
+    # REMOVED: Do not add the Address to the config file for wg setconf
+    # wg1_config["Interface"]["Address"] = warp_config.address_v4
     wg1_config["Peer"]["PublicKey"] = warp_config.public_key
     wg1_config["Peer"]["Endpoint"] = warp_config.endpoint_v4
     wg1_final_config_path = base_dir / "wg1-final.conf"
@@ -110,7 +110,8 @@ def setup_client_warp_mode(client: ClientInfo, private_key: str, base_dir: Path,
     logging.info("Starting amneziawg-go daemon for wg1...")
     _ = run_background_command("bin/amneziawg-go -f wg1")
     time.sleep(1) # Give the daemon a moment to start
-    _ = run_command(f"ip address add dev wg1 {warp_config.address_v4}")
+    # MODIFIED: Add the /32 CIDR mask required by the 'ip address add' command
+    _ = run_command(f"ip address add dev wg1 {warp_config.address_v4}/32")
     _ = run_command("ip link set up dev wg1")
     _ = run_command(f"wg setconf wg1 {wg1_final_config_path}")
     logging.info("wg1 interface is configured.")
@@ -140,7 +141,7 @@ def setup_client_warp_mode(client: ClientInfo, private_key: str, base_dir: Path,
     # Allow return traffic
     _ = run_command("iptables -A FORWARD -i wg1 -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT")
     # Apply NAT for traffic leaving the WARP tunnel, so it appears to come from the runner's WARP IP
-    _ = run_command("iptables -t nat -A POSTROUTING -o wg1 -j MASQUERADE")
+    _ = run_command("iptables -t nat -A POSTROUTING -o wg1 -j MASQUADE")
     logging.info("iptables rules applied successfully.")
 
     logging.info("Chained WireGuard setup is complete and running.")
