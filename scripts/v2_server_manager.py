@@ -56,17 +56,22 @@ def main() -> None:
         base_setup.setup_common_environment(BASE_DIR)
 
         # Step 4: Validate secrets and run mode-specific logic.
-        if mode in ["direct-connect", "hole-punch"]:
+        # MODIFIED: Add the new 'direct-connect-warp' mode to this block
+        if mode in ["direct-connect", "hole-punch", "direct-connect-warp"]:
             if mode == "hole-punch":
                 logging.info("Hole-punch mode detected. Ensuring STUN is installed...")
                 ensure_apt_command_installed("stun", "stun-client")
+
             wg_private_key = get_env_or_fail("WG_PRIVATE_KEY")
             wireguard_args = (client_info, wg_private_key, BASE_DIR, CONFIG_DIR)
+
             if mode == "direct-connect":
                 wireguard.setup_client_mode(*wireguard_args)
-            else: # hole-punch
+            elif mode == "hole-punch":
                 wireguard.setup_server_mode(*wireguard_args)
-
+            # NEW: Handle the chained WARP mode
+            else: # direct-connect-warp
+                wireguard.setup_client_warp_mode(*wireguard_args)
 
         elif mode in ["xray", "xray-direct"]:
             xray_uuid = get_env_or_fail("XRAY_UUID")

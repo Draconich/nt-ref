@@ -81,9 +81,10 @@ def main() -> None:
     check_dependencies("gh")
 
     parser = argparse.ArgumentParser(description="V2 Client for GitHub Actions NAT traversal.")
+    # MODIFIED: Add 'direct-connect-warp' to the choices
     _ = parser.add_argument(
         "mode",
-        choices=["direct-connect", "hole-punch", "xray", "xray-direct"],
+        choices=["direct-connect", "hole-punch", "xray", "xray-direct", "direct-connect-warp"],
         help="The operational mode."
     )
     _ = parser.add_argument(
