@@ -141,7 +141,7 @@ def setup_client_warp_mode(client: ClientInfo, private_key: str, base_dir: Path,
     # Allow return traffic
     _ = run_command("iptables -A FORWARD -i wg1 -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT")
     # Apply NAT for traffic leaving the WARP tunnel, so it appears to come from the runner's WARP IP
-    _ = run_command("iptables -t nat -A POSTROUTING -o wg1 -j MASQUADE")
+    _ = run_command("iptables -t nat -A POSTROUTING -o wg1 -j MASQUERADE")
     logging.info("iptables rules applied successfully.")
 
     logging.info("Chained WireGuard setup is complete and running.")
