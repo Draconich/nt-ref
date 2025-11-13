@@ -42,11 +42,9 @@ def setup_client_mode(client: ClientInfo, private_key: str, base_dir: Path, conf
 
 
     logging.info("Configuring the userspace tunnel...")
-    _ = run_command(f"wg setconf wg0 {final_config_path}")
     _ = run_command(f"ip address add dev wg0 {WG_CLIENT_IP}/30")
     _ = run_command(f"ip link set up dev wg0")
-
-
+    _ = run_command(f"wg setconf wg0 {final_config_path}")
 
     _ = run_command("iptables -A FORWARD -i wg0 -j ACCEPT")
     _ = run_command("iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE")
