@@ -3,14 +3,6 @@
     "loglevel": "none"
   },
 
-  "reverse": {
-    "bridges": [
-      {
-        "tag": "bridge",
-        "domain": "reverse.hellohabr.com"
-      }
-    ]
-  },
   "outbounds": [
     {
       "protocol": "vless",
@@ -22,7 +14,10 @@
             "users": [
               {
                 "id": "__XRAY_UUID_PLACEHOLDER__",
-                "encryption": "none"
+                "encryption": "none",
+                  "reverse": {
+                    "tag": "r-internet"
+               }
               }
             ]
           }
@@ -69,13 +64,7 @@
     "rules": [
       {
         "type": "field",
-        "inboundTag": ["bridge"],
-        "domain": ["full:reverse.hellohabr.com"],
-        "outboundTag": "outgoing"
-      },
-      {
-        "type": "field",
-        "inboundTag": ["bridge"],
+        "inboundTag": ["r-internet"],
         "outboundTag": "wireguard-1"
       }
     ]
