@@ -22,8 +22,7 @@
             "users": [
               {
                 "id": "__XRAY_UUID_PLACEHOLDER__",
-                "encryption": "none",
-                "flow": "xtls-rprx-vision"
+                "encryption": "none"
               }
             ]
           }
