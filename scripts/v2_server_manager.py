@@ -81,7 +81,6 @@ def main() -> None:
                     wireguard.setup_server_mode(*wireguard_args)
                 else: # direct-connect-warp
                     wireguard.setup_client_warp_mode(*wireguard_args)
-
         # Step 4: Validate secrets and run mode-specific logic.
         # MODIFIED: Add the new 'direct-connect-warp' mode to this block
         if mode in ["direct-connect", "hole-punch", "direct-connect-warp"]:
