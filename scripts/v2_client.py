@@ -11,15 +11,20 @@ import time
 from pathlib import Path
 from typing import cast
 
-# Third-party libraries - install with "pip install requests"
-import requests
-
 # This line is crucial for running the script directly.
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from gh_runner_service.common.crypto import encrypt_payload
+from gh_runner_service.common.utils import check_dependencies, get_env_or_fail, ensure_pip_package
+from gh_runner_service.common.crypto import encrypt_payload, decrypt_payload
 from gh_runner_service.common.exceptions import AppError
-from gh_runner_service.common.utils import check_dependencies, get_env_or_fail
+
+# Dynamically install required packages if missing
+ensure_pip_package("requests")
+ensure_pip_package("pystun3", "stun")
+
+import requests
+import stun
+from gh_runner_service.common.gist import create_gist, read_gist, delete_gist
 
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
@@ -55,7 +60,7 @@ def get_public_ip() -> str:
 
 
 def run_stun_client(local_port: int) -> tuple[str, str]:
-    """Runs the STUN client to determine external IP and mapped port."""
+    """Runs the STUN client to determine external IP and mapped port (Legacy mode)."""
     logging.info(f"Running STUN client on local port {local_port}...")
     stun_cmd = f"stun -v {STUN_SERVER} -p {local_port}"
     result = subprocess.run(shlex.split(stun_cmd), capture_output=True, text=True, timeout=15)
@@ -81,10 +86,9 @@ def main() -> None:
     check_dependencies("gh")
 
     parser = argparse.ArgumentParser(description="V2 Client for GitHub Actions NAT traversal.")
-    # MODIFIED: Add 'direct-connect-warp' to the choices
     _ = parser.add_argument(
         "mode",
-        choices=["direct-connect", "hole-punch", "xray", "xray-direct", "direct-connect-warp"],
+        choices=["direct-connect", "hole-punch", "auto-hole-punch", "xray", "xray-direct", "direct-connect-warp"],
         help="The operational mode."
     )
     _ = parser.add_argument(
@@ -97,17 +101,47 @@ def main() -> None:
 
     run_id: int | None = None
     repo: str | None = None
+    gist_id: str | None = None
 
     try:
         encryption_key = get_env_or_fail(ENCRYPTION_KEY_ENV_VAR)
         repo = repo_arg or get_env_or_fail("GH_REPO")
-        _ = get_env_or_fail("GITHUB_TOKEN")
+        
+        # We need a token for both triggering the action and manipulating Gists
+        github_token = os.environ.get("GH_PAT") or os.environ.get("GITHUB_TOKEN")
+        if not github_token:
+            raise AppError("Required environment variable 'GH_PAT' or 'GITHUB_TOKEN' is not set.")
 
         while True:
+            gist_id = None
             try:
                 logging.info(f"Preparing to trigger V2 workflow in '{mode}' mode.")
                 payload_str = ""
-                if mode == "hole-punch":
+
+                if mode == "auto-hole-punch":
+                    check_dependencies("wg", "wg-quick")
+                    
+                    # 1. Generate local WireGuard keys
+                    priv = subprocess.run(["wg", "genkey"], capture_output=True, text=True, check=True).stdout.strip()
+                    pub = subprocess.run(["wg", "pubkey"], input=priv, capture_output=True, text=True, check=True).stdout.strip()
+                    
+                    # 2. Get STUN info for a dynamically chosen port via pystun3
+                    local_port = 51820 + (os.getpid() % 1000)
+                    logging.info(f"Resolving STUN for local port {local_port}...")
+                    nat_type, ext_ip, ext_port = stun.get_ip_info("0.0.0.0", local_port, "stun.l.google.com", 19302)
+                    if not ext_ip:
+                        raise AppError("Failed to resolve STUN IP.")
+                    time.sleep(1) # Give the OS a moment to safely release the UDP socket
+                    
+                    # 3. Save Client configuration to a secure Gist
+                    client_data = json.dumps({"client_ip": ext_ip, "client_port": ext_port, "client_pub": pub})
+                    enc_data = encrypt_payload(client_data, encryption_key)
+                    gist_id = create_gist(github_token, enc_data)
+                    logging.info(f"Created secure Gist ID: {gist_id}")
+                    
+                    payload_str = f"gist:{gist_id}"
+
+                elif mode == "hole-punch":
                     check_dependencies("stun", "nc")
                     local_port = 20000 + (os.getpid() % 10000)
                     ipport, _ = run_stun_client(local_port)
@@ -150,13 +184,72 @@ def main() -> None:
 
                 logging.info(f"Workflow run {run_id} is active on GitHub.")
 
-                # Wait for 6 hours before the next run
+                # ==== Auto Hole-Punch Sync & Connect Logic ====
+                if mode == "auto-hole-punch" and gist_id:
+                    logging.info("Waiting for Runner config via Gist (up to 10 minutes)...")
+                    runner_data = None
+                    for attempt in range(60):
+                        time.sleep(10)
+                        try:
+                            content = read_gist(github_token, gist_id)
+                            # If content changed, runner updated it
+                            if content != enc_data:
+                                decrypted_str = decrypt_payload(content, encryption_key)
+                                runner_data = json.loads(decrypted_str)
+                                if "runner_pub" in runner_data:
+                                    break
+                        except Exception as e:
+                            logging.warning(f"Error reading Gist on attempt {attempt+1}: {e}")
+                            
+                    # Always clean up the gist once we have the data or timed out
+                    delete_gist(github_token, gist_id)
+                    gist_id = None
+                    
+                    if not runner_data:
+                        raise AppError("Timeout waiting for runner configuration. Runner may have failed to start.")
+                        
+                    # 4. Auto-configure wg-quick tunnel
+                    conf_path = Path("wg-gha.conf").resolve()
+                    conf_content = f"""[Interface]
+PrivateKey = {priv}
+ListenPort = {local_port}
+Address = 192.168.166.2/32
+
+[Peer]
+PublicKey = {runner_data['runner_pub']}
+Endpoint = {runner_data['runner_ip']}:{runner_data['runner_port']}
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 5
+"""
+                    conf_path.write_text(conf_content)
+                    # Tear down existing interface if left hanging
+                    subprocess.run(["sudo", "wg-quick", "down", str(conf_path)], stderr=subprocess.DEVNULL)
+                    
+                    logging.info("Starting wg-quick tunnel...")
+                    subprocess.run(["sudo", "wg-quick", "up", str(conf_path)], check=True)
+                    logging.info("✅ Auto UDP Hole-Punch Tunnel is UP!")
+                    logging.info("All traffic is now routed securely through GitHub Actions.")
+
+                # Wait for 6 hours before the next run (GitHub Actions max limit limit)
                 wait_duration = 6 * 3600
                 logging.info(f"Waiting for {wait_duration / 3600:.1f} hours before next trigger. Press Ctrl+C to cancel the current run and exit.")
                 time.sleep(wait_duration)
+                
+                # Cleanup tunnel before starting new cycle
+                if mode == "auto-hole-punch":
+                    logging.info("Bringing down wg-quick interface for session refresh...")
+                    subprocess.run(["sudo", "wg-quick", "down", str(Path("wg-gha.conf").resolve())], stderr=subprocess.DEVNULL)
 
             except (AppError, subprocess.CalledProcessError) as e:
                 logging.error(f"An error occurred during the loop: {e}")
+                
+                if gist_id and mode == "auto-hole-punch":
+                    try:
+                        delete_gist(github_token, gist_id)
+                        logging.info(f"Cleaned up orphaned Gist {gist_id}")
+                    except Exception:
+                        pass
+                        
                 if run_id and repo:
                     logging.info(f"Attempting to cancel run {run_id}...")
                     _ = subprocess.run(['gh', 'run', 'cancel', str(run_id), '--repo', repo])
@@ -164,9 +257,16 @@ def main() -> None:
                 logging.info("Retrying after a 60-second delay due to error...")
                 time.sleep(60)
 
-
     except KeyboardInterrupt:
         logging.info("\nCtrl+C detected.")
+        if mode == "auto-hole-punch":
+            logging.info("Bringing down wg-quick interface...")
+            subprocess.run(["sudo", "wg-quick", "down", str(Path("wg-gha.conf").resolve())], stderr=subprocess.DEVNULL)
+            if gist_id:
+                try:
+                    delete_gist(github_token, gist_id)
+                except Exception:
+                    pass
         if run_id and repo:
             logging.info(f"Attempting to cancel run {run_id}...")
             _ = subprocess.run(['gh', 'run', 'cancel', str(run_id), '--repo', repo])
@@ -174,4 +274,5 @@ def main() -> None:
         sys.exit(0)
 
 if __name__ == "__main__":
+    main()
     main()
