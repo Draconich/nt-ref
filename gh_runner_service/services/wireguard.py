@@ -203,11 +203,12 @@ PersistentKeepalive = 25
     _ = run_command("iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE")
 
     logging.info("WireGuard (Server) is up and running.")
+    
 def setup_auto_hole_punch_server(gist_id: str, private_key: str, base_dir: Path, config_dir: Path) -> None:
-    """Fully automated server setup via Gist sync."""
+    """Fully automated server setup via Gist sync using userspace WireGuard."""
     from ..common.gist import read_gist, update_gist
     from ..common.crypto import decrypt_payload, encrypt_payload
-    from ..common.utils import ensure_pip_package, run_command
+    from ..common.utils import ensure_pip_package, run_command, run_background_command
     import subprocess
     import os
     import time
@@ -236,14 +237,14 @@ def setup_auto_hole_punch_server(gist_id: str, private_key: str, base_dir: Path,
     logging.info(f"Runner STUN result: {ext_ip}:{ext_port} ({nat_type})")
     time.sleep(1) # Small delay to release socket smoothly
     
-    # Get runner pubkey
+    # Get runner pubkey using wg
     pub_proc = subprocess.run(["wg", "pubkey"], input=private_key, capture_output=True, text=True, check=True)
     runner_pub = pub_proc.stdout.strip()
     
+
     conf = f"""[Interface]
 PrivateKey = {private_key}
 ListenPort = {runner_port}
-
 
 [Peer]
 PublicKey = {client_data['client_pub']}
@@ -254,17 +255,39 @@ PersistentKeepalive = 5
     conf_path = base_dir / "wg0-final.conf"
     conf_path.write_text(conf)
     
-    # Start WG
-    _ = run_command("ip link add dev wg0 type wireguard")
-    _ = run_command(f"wg setconf wg0 {conf_path}")
+
+    logging.info("Starting amneziawg-go userspace daemon for wg0...")
+    _ = run_background_command("bin/amneziawg-go -f wg0")
+    
+
+    time.sleep(1)
+
+
+    logging.info("Configuring the userspace tunnel...")
     _ = run_command(f"ip address add dev wg0 {WG_SERVER_IP}/30")
     _ = run_command("ip link set up dev wg0")
+
+    _ = run_command(f"wg setconf wg0 {conf_path}")
+
+
+    get_iface_cmd = "ip -j route show default"
+    result = run_command(get_iface_cmd)
+    try:
+        route_info = json.loads(result.stdout)
+        primary_interface = route_info[0]['dev']
+    except (json.JSONDecodeError, IndexError, KeyError) as e:
+        raise AppError(f"Could not parse primary interface from JSON output: {result.stdout}") from e
+
+    logging.info(f"Detected primary network interface: {primary_interface}")
+
     _ = run_command("iptables -A FORWARD -i wg0 -j ACCEPT")
-    _ = run_command("iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE")
+    _ = run_command("iptables -A FORWARD -o wg0 -j ACCEPT")
+    _ = run_command(f"iptables -t nat -A POSTROUTING -o {primary_interface} -j MASQUERADE")
     
     logging.info("Publishing Runner info back to Gist...")
     runner_data = json.dumps({"runner_ip": ext_ip, "runner_port": ext_port, "runner_pub": runner_pub})
     update_gist(github_token, gist_id, encrypt_payload(runner_data, encryption_key))
     
-    logging.info("Auto UDP Hole-Punch Server is running. Awaiting client packets...")
+    logging.info("Auto UDP Hole-Punch Server (Userspace Mode) is running. Awaiting client packets...")
     _ = run_command("sleep 365d")
+
