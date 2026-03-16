@@ -83,11 +83,18 @@ def main() -> None:
                     wireguard.setup_client_warp_mode(*wireguard_args)
         # Step 4: Validate secrets and run mode-specific logic.
         # MODIFIED: Add the new 'direct-connect-warp' mode to this block
-        if mode in ["direct-connect", "hole-punch", "direct-connect-warp"]:
+        if mode in ["direct-connect", "hole-punch", "direct-connect-warp", "auto-hole-punch", "auto-hole-punch-warp"]:
             if mode == "hole-punch":
                 logging.info("Hole-punch mode detected. Ensuring STUN is installed...")
                 ensure_apt_command_installed("stun", "stun-client")
 
+            if mode in ["auto-hole-punch", "auto-hole-punch-warp"]:
+                logging.info(f"{mode} mode detected.")
+                ensure_apt_command_installed("wireguard-tools", "wireguard")
+              
+         
+            wireguard.setup_auto_hole_punch_server(gist_id, wg_private_key, BASE_DIR, CONFIG_DIR, use_warp=(mode == "auto-hole-punch-warp"))
+            
             wg_private_key = get_env_or_fail("WG_PRIVATE_KEY")
             wireguard_args = (client_info, wg_private_key, BASE_DIR, CONFIG_DIR)
 
