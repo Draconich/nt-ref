@@ -203,3 +203,66 @@ PersistentKeepalive = 25
     _ = run_command("iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE")
 
     logging.info("WireGuard (Server) is up and running.")
+
+def setup_auto_hole_punch_server(gist_id: str, private_key: str, base_dir: Path, config_dir: Path) -> None:
+    """Fully automated server setup via Gist sync."""
+    from ..common.gist import read_gist, update_gist
+    from ..common.crypto import decrypt_payload, encrypt_payload
+    from ..common.utils import ensure_pip_package
+    import subprocess
+    
+    ensure_pip_package("pystun3", "stun")
+    import stun
+    
+    github_token = os.getenv("GH_PAT") or os.getenv("GITHUB_TOKEN")
+    if not github_token:
+        raise AppError("GH_PAT or GITHUB_TOKEN is required for Gist synchronization.")
+        
+    encryption_key = os.getenv("GHA_PAYLOAD_KEY")
+    if not encryption_key:
+        raise AppError("GHA_PAYLOAD_KEY is missing.")
+    
+    logging.info(f"Reading Client info from Gist: {gist_id}")
+    enc_client = read_gist(github_token, gist_id)
+    client_data = json.loads(decrypt_payload(enc_client, encryption_key))
+    
+    runner_port = 51820
+    logging.info(f"Getting STUN info for Runner on port {runner_port}...")
+    nat_type, ext_ip, ext_port = stun.get_ip_info("0.0.0.0", runner_port, "stun.l.google.com", 19302)
+    if not ext_ip:
+        raise AppError("Failed to get Runner STUN info.")
+    logging.info(f"Runner STUN result: {ext_ip}:{ext_port} ({nat_type})")
+    time.sleep(1) # Small delay to release socket smoothly
+    
+    # Get runner pubkey
+    pub_proc = subprocess.run(["wg", "pubkey"], input=private_key, capture_output=True, text=True, check=True)
+    runner_pub = pub_proc.stdout.strip()
+    
+    conf = f"""[Interface]
+PrivateKey = {private_key}
+ListenPort = {runner_port}
+Address = {WG_SERVER_IP}/30
+
+[Peer]
+PublicKey = {client_data['client_pub']}
+Endpoint = {client_data['client_ip']}:{client_data['client_port']}
+AllowedIPs = {WG_CLIENT_IP}/32
+PersistentKeepalive = 5
+"""
+    conf_path = base_dir / "wg0-final.conf"
+    conf_path.write_text(conf)
+    
+    # Start WG
+    _ = run_command("ip link add dev wg0 type wireguard")
+    _ = run_command(f"wg setconf wg0 {conf_path}")
+    _ = run_command(f"ip address add dev wg0 {WG_SERVER_IP}/30")
+    _ = run_command("ip link set up dev wg0")
+    _ = run_command("iptables -A FORWARD -i wg0 -j ACCEPT")
+    _ = run_command("iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE")
+    
+    logging.info("Publishing Runner info back to Gist...")
+    runner_data = json.dumps({"runner_ip": ext_ip, "runner_port": ext_port, "runner_pub": runner_pub})
+    update_gist(github_token, gist_id, encrypt_payload(runner_data, encryption_key))
+    
+    logging.info("Auto UDP Hole-Punch Server is running. Awaiting client packets...")
+    _ = run_command("sleep 365d")
