@@ -206,27 +206,28 @@ PersistentKeepalive = 25
     
 def setup_auto_hole_punch_server(gist_id: str, private_key: str, base_dir: Path, config_dir: Path, use_warp: bool = False) -> None:
     """Fully automated server setup using canonical NAT traversal techniques."""
-    from ..common.gist import read_gist, update_gist
-    from ..common.crypto import decrypt_payload, encrypt_payload
-    from ..common.utils import ensure_apt_command_installed, run_command, run_background_command
     import configparser
-    import subprocess
-    import os
-    import time
     import json
+    import logging
+    import os
     import re
+    import subprocess
+    import time
+    # Импортируем AppError локально, чтобы не было проблем с путями
+    from ..common.exceptions import AppError
+    from ..common.crypto import decrypt_payload, encrypt_payload
+    from ..common.gist import read_gist, update_gist
+    from ..common.utils import run_command, run_background_command, ensure_apt_command_installed
     
+    # Constants (дублируем локально для надежности)
+    WG_SERVER_IP = "192.168.166.1"
+    WG_CLIENT_IP = "192.168.166.2"
 
     ensure_apt_command_installed("stun", "stun-client")
     ensure_apt_command_installed("nping", "nmap")
     
     github_token = os.getenv("GH_PAT") or os.getenv("GITHUB_TOKEN")
-    if not github_token:
-        raise AppError("GH_PAT or GITHUB_TOKEN is required.")
-        
     encryption_key = os.getenv("GHA_PAYLOAD_KEY")
-    if not encryption_key:
-        raise AppError("GHA_PAYLOAD_KEY is missing.")
     
     logging.info(f"Reading Client info from Gist: {gist_id}")
     enc_client = read_gist(github_token, gist_id)
@@ -234,23 +235,17 @@ def setup_auto_hole_punch_server(gist_id: str, private_key: str, base_dir: Path,
     
     runner_port = 51820
     
-
-    logging.info(f"Detecting server's external mapping for UDP port {runner_port} via STUN...")
+    logging.info(f"Detecting server's external mapping via STUN...")
     stun_cmd = f"stun -v stun.l.google.com:19302 -p {runner_port}"
     result = run_command(stun_cmd)
-    output = result.stdout + result.stderr
-    mapped_addr_match = re.search(r"MappedAddress.*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d+)", output)
+    mapped_addr_match = re.search(r"MappedAddress.*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d+)", result.stdout + result.stderr)
     if not mapped_addr_match:
-        raise AppError("Could not determine server's external mapping via STUN.")
+        raise AppError("STUN failed.")
     
-    ext_ip, ext_port_str = mapped_addr_match.groups()
-    ext_port = int(ext_port_str)
+    ext_ip, ext_port = mapped_addr_match.groups()
     logging.info(f"Server mapped to {ext_ip}:{ext_port}")
-    time.sleep(1) 
     
-
-    logging.info(f"Starting proactive NAT punch towards client at {client_data['client_ip']}:{client_data['client_port']}")
-
+    logging.info(f"Starting proactive NAT punch...")
     punch_cmd = (f"nping --udp --ttl 4 -c 300 --rate 0.5 --no-capture "
                  f"--source-port {runner_port} --dest-port {client_data['client_port']} {client_data['client_ip']}")
     _ = run_background_command(punch_cmd)
@@ -259,14 +254,7 @@ def setup_auto_hole_punch_server(gist_id: str, private_key: str, base_dir: Path,
     runner_pub = pub_proc.stdout.strip()
     
     conf_path = base_dir / "wg0-final.conf"
-    conf_path.write_text(f"""[Interface]
-PrivateKey = {private_key}
-ListenPort = {runner_port}
-
-[Peer]
-PublicKey = {client_data['client_pub']}
-AllowedIPs = {WG_CLIENT_IP}/32
-""")
+    conf_path.write_text(f"[Interface]\nPrivateKey = {private_key}\nListenPort = {runner_port}\n\n[Peer]\nPublicKey = {client_data['client_pub']}\nAllowedIPs = {WG_CLIENT_IP}/32\n")
     
     _ = run_background_command("bin/amneziawg-go -f wg0")
     time.sleep(1)
@@ -274,30 +262,21 @@ AllowedIPs = {WG_CLIENT_IP}/32
     _ = run_command("ip link set mtu 1360 up dev wg0")
     _ = run_command(f"wg setconf wg0 {conf_path}")
 
-
     if use_warp:
-        logging.info("--- Configuring wg1 (WARP) tunnel ---")
+        logging.info("--- Configuring WARP (wg1) ---")
         from .cloudflare_warp import get_warp_config
         warp_config = get_warp_config()
         wg1_final_config_path = base_dir / "wg1-final.conf"
-        wg1_final_config_path.write_text(f"""[Interface]
-PrivateKey = {warp_config.private_key}
-[Peer]
-PublicKey = {warp_config.public_key}
-Endpoint = {warp_config.endpoint_v4}
-AllowedIPs = 0.0.0.0/0
-""")
+        wg1_final_config_path.write_text(f"[Interface]\nPrivateKey = {warp_config.private_key}\n[Peer]\nPublicKey = {warp_config.public_key}\nEndpoint = {warp_config.endpoint_v4}\nAllowedIPs = 0.0.0.0/0\n")
+        
         _ = run_background_command("bin/amneziawg-go -f wg1")
         time.sleep(1)
         _ = run_command(f"ip address add dev wg1 {warp_config.address_v4}/32")
         _ = run_command("ip link set mtu 1360 up dev wg1")
         _ = run_command(f"wg setconf wg1 {wg1_final_config_path}")
-        TABLE_NAME, TABLE_ID = "via_warp", "101"
-        _ = run_command(f'bash -c "echo \'{TABLE_ID} {TABLE_NAME}\' >> /etc/iproute2/rt_tables"')
-        _ = run_command(f"ip rule add from {WG_CLIENT_IP}/32 table {TABLE_NAME}")
-        _ = run_command(f"ip route add default dev wg1 table {TABLE_NAME}")
-        _ = run_command("iptables -A FORWARD -i wg0 -o wg1 -j ACCEPT")
-        _ = run_command("iptables -A FORWARD -i wg1 -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT")
+        
+        _ = run_command("ip rule add from 192.168.166.2/32 table 101")
+        _ = run_command("ip route add default dev wg1 table 101")
         _ = run_command("iptables -t nat -A POSTROUTING -o wg1 -j MASQUERADE")
     else:
         out_interface = json.loads(run_command("ip -j route show default").stdout)[0]['dev']
@@ -305,10 +284,9 @@ AllowedIPs = 0.0.0.0/0
 
     _ = run_command("iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu")
     
-    logging.info("Publishing Runner endpoint info back to Gist...")
-    runner_data = json.dumps({"runner_ip": ext_ip, "runner_port": ext_port, "runner_pub": runner_pub})
+    runner_data = json.dumps({"runner_ip": ext_ip, "runner_port": int(ext_port), "runner_pub": runner_pub})
     update_gist(github_token, gist_id, encrypt_payload(runner_data, encryption_key))
     
-    logging.info(f"Auto Hole-Punch Server ({'WARP' if use_warp else 'Direct'} Mode) is running!")
+    logging.info("Server is READY. Sleeping...")
     _ = run_command("sleep 365d")
 
