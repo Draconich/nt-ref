@@ -243,7 +243,7 @@ def setup_auto_hole_punch_server(gist_id: str, private_key: str, base_dir: Path,
     conf = f"""[Interface]
 PrivateKey = {private_key}
 ListenPort = {runner_port}
-Address = {WG_SERVER_IP}/30
+
 
 [Peer]
 PublicKey = {client_data['client_pub']}
