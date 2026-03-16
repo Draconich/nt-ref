@@ -38,22 +38,49 @@ def main() -> None:
         client_info_json = get_env_or_fail("INPUT_CLIENT_INFO_JSON")
 
         logging.info(f"Mode received: {mode}")
-
         # Step 2: Decrypt payload
         client_data = cast(dict[str, str], json.loads(client_info_json))
         encrypted_payload = client_data["payload_b64"]
         decrypted_payload = decrypt_payload(encrypted_payload, encryption_key)
 
-        parts = decrypted_payload.split(":")
-        client_info = ClientInfo(
-            ip=parts[0],
-            port=int(parts[1]),
-            local_port=int(parts[2]) if len(parts) > 2 else None
-        )
-        logging.info("Payload decrypted successfully.")
+        client_info = None
+        gist_id = None
+        
+        if decrypted_payload.startswith("gist:"):
+            gist_id = decrypted_payload.split(":")[1]
+            logging.info("Gist payload detected. Skipping direct IP parse.")
+        else:
+            parts = decrypted_payload.split(":")
+            client_info = ClientInfo(
+                ip=parts[0],
+                port=int(parts[1]),
+                local_port=int(parts[2]) if len(parts) > 2 else None
+            )
+            logging.info("Direct payload decrypted successfully.")
 
         # Step 3: Set up the common environment BEFORE mode-specific logic.
         base_setup.setup_common_environment(BASE_DIR)
+
+        # Step 4: Validate secrets and run mode-specific logic.
+        if mode in ["direct-connect", "hole-punch", "direct-connect-warp", "auto-hole-punch"]:
+            wg_private_key = get_env_or_fail("WG_PRIVATE_KEY")
+            
+            if mode == "auto-hole-punch":
+                logging.info("Auto Hole-Punch mode detected.")
+                ensure_apt_command_installed("wireguard-tools", "wireguard")
+                wireguard.setup_auto_hole_punch_server(gist_id, wg_private_key, BASE_DIR, CONFIG_DIR)
+            else:
+                if mode == "hole-punch":
+                    logging.info("Legacy hole-punch mode detected. Ensuring STUN is installed...")
+                    ensure_apt_command_installed("stun", "stun-client")
+
+                wireguard_args = (client_info, wg_private_key, BASE_DIR, CONFIG_DIR)
+                if mode == "direct-connect":
+                    wireguard.setup_client_mode(*wireguard_args)
+                elif mode == "hole-punch":
+                    wireguard.setup_server_mode(*wireguard_args)
+                else: # direct-connect-warp
+                    wireguard.setup_client_warp_mode(*wireguard_args)
 
         # Step 4: Validate secrets and run mode-specific logic.
         # MODIFIED: Add the new 'direct-connect-warp' mode to this block
