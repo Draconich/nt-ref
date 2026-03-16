@@ -38,13 +38,14 @@ def main() -> None:
         client_info_json = get_env_or_fail("INPUT_CLIENT_INFO_JSON")
 
         logging.info(f"Mode received: {mode}")
-        # Step 2: Decrypt payload
+
+        # Step 2: Decrypt payload and determine if it's a Gist or direct IP
         client_data = cast(dict[str, str], json.loads(client_info_json))
         encrypted_payload = client_data["payload_b64"]
         decrypted_payload = decrypt_payload(encrypted_payload, encryption_key)
 
-        client_info = None
-        gist_id = None
+        client_info: ClientInfo | None = None
+        gist_id: str | None = None
         
         if decrypted_payload.startswith("gist:"):
             gist_id = decrypted_payload.split(":")[1]
@@ -58,55 +59,46 @@ def main() -> None:
             )
             logging.info("Direct payload decrypted successfully.")
 
-        # Step 3: Set up the common environment BEFORE mode-specific logic.
+        # Step 3: Set up the common environment
         base_setup.setup_common_environment(BASE_DIR)
 
-        # Step 4: Validate secrets and run mode-specific logic.
-        if mode in ["direct-connect", "hole-punch", "direct-connect-warp", "auto-hole-punch"]:
+        # Step 4: Run mode-specific logic with clear branching
+        if mode in ["auto-hole-punch", "auto-hole-punch-warp"]:
+            logging.info(f"Starting {mode} setup...")
             wg_private_key = get_env_or_fail("WG_PRIVATE_KEY")
+            ensure_apt_command_installed("wireguard-tools", "wireguard")
+            if not gist_id:
+                raise AppError("Gist ID is required for auto-hole-punch modes but was not found.")
             
-            if mode == "auto-hole-punch":
-                logging.info("Auto Hole-Punch mode detected.")
-                ensure_apt_command_installed("wireguard-tools", "wireguard")
-                wireguard.setup_auto_hole_punch_server(gist_id, wg_private_key, BASE_DIR, CONFIG_DIR)
-            else:
-                if mode == "hole-punch":
-                    logging.info("Legacy hole-punch mode detected. Ensuring STUN is installed...")
-                    ensure_apt_command_installed("stun", "stun-client")
-
-                wireguard_args = (client_info, wg_private_key, BASE_DIR, CONFIG_DIR)
-                if mode == "direct-connect":
-                    wireguard.setup_client_mode(*wireguard_args)
-                elif mode == "hole-punch":
-                    wireguard.setup_server_mode(*wireguard_args)
-                else: # direct-connect-warp
-                    wireguard.setup_client_warp_mode(*wireguard_args)
-        # Step 4: Validate secrets and run mode-specific logic.
-        # MODIFIED: Add the new 'direct-connect-warp' mode to this block
-        if mode in ["direct-connect", "hole-punch", "direct-connect-warp", "auto-hole-punch", "auto-hole-punch-warp"]:
-            if mode == "hole-punch":
-                logging.info("Hole-punch mode detected. Ensuring STUN is installed...")
-                ensure_apt_command_installed("stun", "stun-client")
-
-            if mode in ["auto-hole-punch", "auto-hole-punch-warp"]:
-                logging.info(f"{mode} mode detected.")
-                ensure_apt_command_installed("wireguard-tools", "wireguard")
-              
-         
-            wireguard.setup_auto_hole_punch_server(gist_id, wg_private_key, BASE_DIR, CONFIG_DIR, use_warp=(mode == "auto-hole-punch-warp"))
+            wireguard.setup_auto_hole_punch_server(
+                gist_id, 
+                wg_private_key, 
+                BASE_DIR, 
+                CONFIG_DIR, 
+                use_warp=(mode == "auto-hole-punch-warp")
+            )
+        
+        elif mode in ["direct-connect", "hole-punch", "direct-connect-warp"]:
+            logging.info(f"Starting legacy mode {mode} setup...")
+            if not client_info:
+                 raise AppError(f"ClientInfo is required for mode '{mode}' but was not found.")
             
             wg_private_key = get_env_or_fail("WG_PRIVATE_KEY")
             wireguard_args = (client_info, wg_private_key, BASE_DIR, CONFIG_DIR)
 
-            if mode == "direct-connect":
-                wireguard.setup_client_mode(*wireguard_args)
-            elif mode == "hole-punch":
+            if mode == "hole-punch":
+                ensure_apt_command_installed("stun", "stun-client")
                 wireguard.setup_server_mode(*wireguard_args)
-            # NEW: Handle the chained WARP mode
-            else: # direct-connect-warp
+            elif mode == "direct-connect":
+                wireguard.setup_client_mode(*wireguard_args)
+            elif mode == "direct-connect-warp":
                 wireguard.setup_client_warp_mode(*wireguard_args)
 
         elif mode in ["xray", "xray-direct"]:
+            logging.info(f"Starting {mode} setup...")
+            if not client_info:
+                raise AppError(f"ClientInfo is required for mode '{mode}' but was not found.")
+            
             xray_uuid = get_env_or_fail("XRAY_UUID")
             xray_args = (client_info, xray_uuid, BASE_DIR, CONFIG_DIR)
             if mode == "xray":
@@ -124,6 +116,3 @@ def main() -> None:
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}", exc_info=True)
         sys.exit(1)
-
-if __name__ == "__main__":
-    main()
