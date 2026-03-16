@@ -203,13 +203,15 @@ PersistentKeepalive = 25
     _ = run_command("iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE")
 
     logging.info("WireGuard (Server) is up and running.")
-
 def setup_auto_hole_punch_server(gist_id: str, private_key: str, base_dir: Path, config_dir: Path) -> None:
     """Fully automated server setup via Gist sync."""
     from ..common.gist import read_gist, update_gist
     from ..common.crypto import decrypt_payload, encrypt_payload
-    from ..common.utils import ensure_pip_package
+    from ..common.utils import ensure_pip_package, run_command
     import subprocess
+    import os
+    import time
+    import json
     
     ensure_pip_package("pystun3", "stun")
     import stun
