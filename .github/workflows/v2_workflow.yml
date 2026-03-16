@@ -61,5 +61,6 @@ jobs:
                     XRAY_UUID="${{ secrets.UUID }}" \
                     INPUT_MODE="${{ inputs.mode }}" \
                     INPUT_CLIENT_INFO_JSON='${{ inputs.client_info_json }}' \
+                    GH_PAT="${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}" \
                     PYTHONPATH="." \
                     python3 scripts/v2_server_manager.py
