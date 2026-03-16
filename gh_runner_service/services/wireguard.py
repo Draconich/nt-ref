@@ -237,7 +237,7 @@ def setup_auto_hole_punch_server(gist_id: str, private_key: str, base_dir: Path,
     
     logging.info(f"Detecting server's external mapping via STUN...")
     stun_cmd = f"stun -v stun.l.google.com:19302 -p {runner_port}"
-    result = run_command(stun_cmd)
+    result = run_command(stun_cmd, check=False)
     mapped_addr_match = re.search(r"MappedAddress.*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d+)", result.stdout + result.stderr)
     if not mapped_addr_match:
         raise AppError("STUN failed.")
