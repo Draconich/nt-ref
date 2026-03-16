@@ -131,14 +131,30 @@ def ensure_apt_command_installed(command_name: str, package_name: str | None = N
             raise AppError(f"Failed to install required command '{command_name}' (package: {actual_package_name}): {e}")
 
 def ensure_pip_package(package_name: str, import_name: str | None = None) -> None:
-    """Dynamically installs a pip package if it is not present."""
+    """Dynamically installs a pip package if it is not present, and restarts if needed."""
     import importlib
     import sys
     import subprocess
+    import os
+    import site
+    import logging
+
     import_name = import_name or package_name
     try:
         importlib.import_module(import_name)
     except ImportError:
         logging.info(f"Package '{package_name}' not found. Installing via pip...")
+
         subprocess.run([sys.executable, "-m", "pip", "install", package_name], check=True)
+
+
         importlib.invalidate_caches()
+        if hasattr(site, 'main'):
+            site.main()
+
+
+        try:
+            importlib.import_module(import_name)
+        except ImportError:
+            logging.info(f"Restarting script to load newly installed package '{package_name}'...")
+            os.execv(sys.executable, [sys.executable] + sys.argv)
