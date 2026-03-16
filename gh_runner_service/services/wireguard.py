@@ -204,22 +204,25 @@ PersistentKeepalive = 25
 
     logging.info("WireGuard (Server) is up and running.")
     
-def setup_auto_hole_punch_server(gist_id: str, private_key: str, base_dir: Path, config_dir: Path) -> None:
-    """Fully automated server setup via Gist sync using userspace WireGuard."""
+def setup_auto_hole_punch_server(gist_id: str, private_key: str, base_dir: Path, config_dir: Path, use_warp: bool = False) -> None:
+    """Fully automated server setup using canonical NAT traversal techniques."""
     from ..common.gist import read_gist, update_gist
     from ..common.crypto import decrypt_payload, encrypt_payload
-    from ..common.utils import ensure_pip_package, run_command, run_background_command
+    from ..common.utils import ensure_apt_command_installed, run_command, run_background_command
+    import configparser
     import subprocess
     import os
     import time
     import json
+    import re
     
-    ensure_pip_package("pystun3", "stun")
-    import stun
+
+    ensure_apt_command_installed("stun", "stun-client")
+    ensure_apt_command_installed("nping", "nmap")
     
     github_token = os.getenv("GH_PAT") or os.getenv("GITHUB_TOKEN")
     if not github_token:
-        raise AppError("GH_PAT or GITHUB_TOKEN is required for Gist synchronization.")
+        raise AppError("GH_PAT or GITHUB_TOKEN is required.")
         
     encryption_key = os.getenv("GHA_PAYLOAD_KEY")
     if not encryption_key:
@@ -230,64 +233,82 @@ def setup_auto_hole_punch_server(gist_id: str, private_key: str, base_dir: Path,
     client_data = json.loads(decrypt_payload(enc_client, encryption_key))
     
     runner_port = 51820
-    logging.info(f"Getting STUN info for Runner on port {runner_port}...")
-    nat_type, ext_ip, ext_port = stun.get_ip_info("0.0.0.0", runner_port, "stun.l.google.com", 19302)
-    if not ext_ip:
-        raise AppError("Failed to get Runner STUN info.")
-    logging.info(f"Runner STUN result: {ext_ip}:{ext_port} ({nat_type})")
-    time.sleep(1) # Small delay to release socket smoothly
     
-    # Get runner pubkey using wg
+
+    logging.info(f"Detecting server's external mapping for UDP port {runner_port} via STUN...")
+    stun_cmd = f"stun -v stun.l.google.com:19302 -p {runner_port}"
+    result = run_command(stun_cmd)
+    output = result.stdout + result.stderr
+    mapped_addr_match = re.search(r"MappedAddress.*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d+)", output)
+    if not mapped_addr_match:
+        raise AppError("Could not determine server's external mapping via STUN.")
+    
+    ext_ip, ext_port_str = mapped_addr_match.groups()
+    ext_port = int(ext_port_str)
+    logging.info(f"Server mapped to {ext_ip}:{ext_port}")
+    time.sleep(1) 
+    
+
+    logging.info(f"Starting proactive NAT punch towards client at {client_data['client_ip']}:{client_data['client_port']}")
+
+    punch_cmd = (f"nping --udp --ttl 4 -c 300 --rate 0.5 --no-capture "
+                 f"--source-port {runner_port} --dest-port {client_data['client_port']} {client_data['client_ip']}")
+    _ = run_background_command(punch_cmd)
+    
     pub_proc = subprocess.run(["wg", "pubkey"], input=private_key, capture_output=True, text=True, check=True)
     runner_pub = pub_proc.stdout.strip()
     
-
-    conf = f"""[Interface]
+    conf_path = base_dir / "wg0-final.conf"
+    conf_path.write_text(f"""[Interface]
 PrivateKey = {private_key}
 ListenPort = {runner_port}
 
 [Peer]
 PublicKey = {client_data['client_pub']}
-Endpoint = {client_data['client_ip']}:{client_data['client_port']}
 AllowedIPs = {WG_CLIENT_IP}/32
-PersistentKeepalive = 5
-"""
-    conf_path = base_dir / "wg0-final.conf"
-    conf_path.write_text(conf)
+""")
     
-
-    logging.info("Starting amneziawg-go userspace daemon for wg0...")
     _ = run_background_command("bin/amneziawg-go -f wg0")
-    
-
     time.sleep(1)
-
-
-    logging.info("Configuring the userspace tunnel...")
     _ = run_command(f"ip address add dev wg0 {WG_SERVER_IP}/30")
-    _ = run_command("ip link set up dev wg0")
-
+    _ = run_command("ip link set mtu 1360 up dev wg0")
     _ = run_command(f"wg setconf wg0 {conf_path}")
 
 
-    get_iface_cmd = "ip -j route show default"
-    result = run_command(get_iface_cmd)
-    try:
-        route_info = json.loads(result.stdout)
-        primary_interface = route_info[0]['dev']
-    except (json.JSONDecodeError, IndexError, KeyError) as e:
-        raise AppError(f"Could not parse primary interface from JSON output: {result.stdout}") from e
+    if use_warp:
+        logging.info("--- Configuring wg1 (WARP) tunnel ---")
+        from .cloudflare_warp import get_warp_config
+        warp_config = get_warp_config()
+        wg1_final_config_path = base_dir / "wg1-final.conf"
+        wg1_final_config_path.write_text(f"""[Interface]
+PrivateKey = {warp_config.private_key}
+[Peer]
+PublicKey = {warp_config.public_key}
+Endpoint = {warp_config.endpoint_v4}
+AllowedIPs = 0.0.0.0/0
+""")
+        _ = run_background_command("bin/amneziawg-go -f wg1")
+        time.sleep(1)
+        _ = run_command(f"ip address add dev wg1 {warp_config.address_v4}/32")
+        _ = run_command("ip link set mtu 1360 up dev wg1")
+        _ = run_command(f"wg setconf wg1 {wg1_final_config_path}")
+        TABLE_NAME, TABLE_ID = "via_warp", "101"
+        _ = run_command(f'bash -c "echo \'{TABLE_ID} {TABLE_NAME}\' >> /etc/iproute2/rt_tables"')
+        _ = run_command(f"ip rule add from {WG_CLIENT_IP}/32 table {TABLE_NAME}")
+        _ = run_command(f"ip route add default dev wg1 table {TABLE_NAME}")
+        _ = run_command("iptables -A FORWARD -i wg0 -o wg1 -j ACCEPT")
+        _ = run_command("iptables -A FORWARD -i wg1 -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT")
+        _ = run_command("iptables -t nat -A POSTROUTING -o wg1 -j MASQUERADE")
+    else:
+        out_interface = json.loads(run_command("ip -j route show default").stdout)[0]['dev']
+        _ = run_command(f"iptables -t nat -A POSTROUTING -o {out_interface} -j MASQUERADE")
 
-    logging.info(f"Detected primary network interface: {primary_interface}")
-
-    _ = run_command("iptables -A FORWARD -i wg0 -j ACCEPT")
-    _ = run_command("iptables -A FORWARD -o wg0 -j ACCEPT")
-    _ = run_command(f"iptables -t nat -A POSTROUTING -o {primary_interface} -j MASQUERADE")
+    _ = run_command("iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu")
     
-    logging.info("Publishing Runner info back to Gist...")
+    logging.info("Publishing Runner endpoint info back to Gist...")
     runner_data = json.dumps({"runner_ip": ext_ip, "runner_port": ext_port, "runner_pub": runner_pub})
     update_gist(github_token, gist_id, encrypt_payload(runner_data, encryption_key))
     
-    logging.info("Auto UDP Hole-Punch Server (Userspace Mode) is running. Awaiting client packets...")
+    logging.info(f"Auto Hole-Punch Server ({'WARP' if use_warp else 'Direct'} Mode) is running!")
     _ = run_command("sleep 365d")
 
